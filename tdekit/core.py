@@ -91,7 +91,7 @@ def read_restart(filename):
             atoms = Atoms(symbols=symbols, positions=positions, masses=masses, cell=cell, pbc=pbc, info={'velocities': velocities})
     return atoms
         
-def gpumd(atoms, dirname, run_in, nep_path='nep.txt', electron_stopping_path = 'electron_stopping_fit.txt'):
+def run_gpumd(atoms, dirname, run_in, nep_path='nep.txt', electron_stopping_path = 'electron_stopping_fit.txt'):
     if os.path.exists(dirname):
         raise FileExistsError('Directory already exists')
     os.makedirs(dirname)
@@ -133,4 +133,5 @@ def set_pka(atoms, energy, direction, index=None, symbol=None, scaled_position=(
     print(f'Symbol: {atoms[index].symbol}')
     print(f'Position: {atoms[index].position[0]:.2f}, {atoms[index].position[1]:.2f}, {atoms[index].position[2]:.2f}')
     print(f'Mass: {atoms[index].mass:.2f}')
-    print(f'Velocity: {atoms.info["velocities"][index][0]:.2f}, {atoms.info["velocities"][index][1]:.2f}, {atoms.info["velocities"][index][2]:.2
+    print(f'Velocity: {atoms.info["velocities"][index][0]:.2f}, {atoms.info["velocities"][index][1]:.2f}, {atoms.info["velocities"][index][2]:.2f}')
+

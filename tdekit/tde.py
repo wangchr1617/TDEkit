@@ -1,24 +1,8 @@
+from pathlib import Path
+import argparse
 import os
 import shutil
 import subprocess
-from pathlib import Path
-
-base_dir = Path(__file__).parent
-relax_path = base_dir / "relax" / "restart.xyz"
-cascade_dir = base_dir / "cascade"
-relax_script = "relax.py"
-cascade_script = "cascade.py"
-defect_script = "defects_analyzer.py"
-
-init_energy = 2.0    
-max_energy = 1000.0  
-precision = 0.01     
-
-if not relax_path.exists():
-    print("restart.xyz not found. Running relax.py...")
-    subprocess.run(["python", relax_script], check=True)
-else:
-    print("restart.xyz already exists")
 
 def clean_cascade_dir():
     if cascade_dir.exists():
@@ -55,6 +39,23 @@ def read_fp_count():
         if len(lines) < 2:
             return 0
         return int(lines[-1].split("\t")[-1])
+
+base_dir = Path(__file__).parent
+relax_path = base_dir / "relax" / "restart.xyz"
+cascade_dir = base_dir / "cascade"
+relax_script = "relax.py"
+cascade_script = "cascade.py"
+defect_script = "defects_analyzer.py"
+
+init_energy = 2.0    
+max_energy = 1000.0  
+precision = 0.01     
+
+if not relax_path.exists():
+    print("restart.xyz not found. Running relax.py...")
+    subprocess.run(["python", relax_script], check=True)
+else:
+    print("restart.xyz already exists")
 
 print("Starting exponential growth search...")
 low_energy = init_energy

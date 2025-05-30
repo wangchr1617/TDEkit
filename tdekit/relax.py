@@ -1,5 +1,5 @@
 from ase.io import read
-from .io import gpumd
+from core import run_gpumd
 
 atoms = read("model.xyz") * (15, 9, 2)
 group = []
@@ -24,5 +24,5 @@ run_in = [
     'run 50000'
 ]
 
-gpumd(atoms, 'relax', run_in)
+run_gpumd(atoms, 'relax', run_in)
 

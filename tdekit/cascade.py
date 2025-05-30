@@ -1,8 +1,8 @@
-from .io import gpumd, read_restart, set_pka
+from core import run_gpumd, read_restart, set_pka
 import numpy as np
 
 atoms = read_restart('relax/restart.xyz')
-energy = 4.28
+energy = 3.15  # eV
 direction = np.array([0, 0, 1])
 set_pka(atoms, energy, direction)
 
@@ -20,5 +20,5 @@ run_in = [
     'dump_exyz 2000 1 1',
     'run 30000'
 ]
-gpumd(atoms, 'cascade', run_in)
+run_gpumd(atoms, 'cascade', run_in)
 

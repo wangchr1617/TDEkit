@@ -45,13 +45,14 @@ if cascade_script.exists():
                 pass
 
 history_path = base_dir / "defect_evolution_history.txt"
-header = "Energy(eV)\tTimestep\tFrenkel_pairs\n"
-line = f"{energy:.2f if energy is not None else 'NaN'}\t{last_frame}\t{fp}\n"
+header = not os.path.exists(history_path) or os.path.getsize(history_path) == 0
 
-if not history_path.exists() or history_path.stat().st_size == 0:
-    history_path.write_text(header + line, encoding="utf-8")
-else:
-    with history_path.open("a", encoding="utf-8") as f:
-        f.write(line)
+with open(history_path, "a", encoding="utf-8") as f:
+    if header:
+        f.write("Energy(eV)\tTimestep\tFrenkel_pairs\n")
+    if energy is not None:
+        f.write(f"{energy:.4f}\t{last_frame}\t{fp}\n")
+    else:
+        f.write(f"NaN\t{last_frame}\t{fp}\n")
 
 print(f"Processing completed. Results saved to: {summary_path} and {history_path}")
