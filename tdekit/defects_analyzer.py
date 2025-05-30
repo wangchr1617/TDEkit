@@ -1,75 +1,57 @@
-import argparse
-import os
-import sys
-from multiprocessing import Pool, cpu_count
 from ovito.io import import_file
-from ovito.vis import Viewport, TachyonRenderer
-from ovito.modifiers import WignerSeitzAnalysisModifier, ExpressionSelectionModifier, DeleteSelectedModifier, AssignColorModifier
+from ovito.modifiers import WignerSeitzAnalysisModifier
+from pathlib import Path
+import os
 
-def wigner_seitz_analysis(input_file, output):
-    pipeline = import_file(input_file)
+def count_defects(frame, data):
+    """Count and record vacancy and interstitial defects"""
+    vacancy = data.attributes['WignerSeitz.vacancy_count']
+    interstitial = data.attributes['WignerSeitz.interstitial_count']
     
-    wigner_seitz = WignerSeitzAnalysisModifier(output_displaced=False)
-    pipeline.modifiers.append(wigner_seitz)
-    pipeline.modifiers.append(ExpressionSelectionModifier(expression="Occupancy == 1"))
-    pipeline.modifiers.append(DeleteSelectedModifier())
+    if vacancy != interstitial:
+        print(f"Warning: At timestep {frame}, vacancy count ({vacancy}) != interstitial count ({interstitial})")
     
-    last_frame_index = pipeline.source.num_frames - 1
-    final_data = pipeline.compute(last_frame_index)
-    output = 1 if final_data.particles.count > 0 else 0
+    data.attributes.update(Frenkel_pairs=interstitial, Timestep=frame)
     
-    pipeline.remove_from_scene()
-    del pipeline
-    
-    return output
+base_dir = Path(__file__).parent
+input_xyz = base_dir / "cascade" / "dump.xyz"
 
-def gif_generator(input_file, output_file):
-    pipeline = import_file(input_file, multiple_frames=True)
-    wigner_seitz = WignerSeitzAnalysisModifier(
-        output_displaced=False
-    )
-    pipeline.modifiers.append(wigner_seitz)
-    
-    pipeline.modifiers.append(ExpressionSelectionModifier(expression="Occupancy == 1"))
-    pipeline.modifiers.append(DeleteSelectedModifier())
-    
-    pipeline.modifiers.append(ExpressionSelectionModifier(expression="Occupancy > 1"))
-    pipeline.modifiers.append(AssignColorModifier(color=(1.0, 0.0, 0.0)))
-    
-    pipeline.modifiers.append(ExpressionSelectionModifier(expression="Occupancy == 0"))
-    pipeline.modifiers.append(AssignColorModifier(color=(0.0, 0.0, 1.0)))
-    
-    pipeline.add_to_scene()
+if not os.path.exists(input_xyz):
+    print(f"Error: File not found - {input_xyz}")
+    exit(1)
 
-    vp = Viewport(type=Viewport.Type.Front)
-    vp.zoom_all()
+pipeline = import_file(str(input_xyz))
+data0 = pipeline.compute(0)
+pipeline.source.data.cell = data0.cell
 
-    renderer = TachyonRenderer()
+pipeline.modifiers.append(WignerSeitzAnalysisModifier(reference_frame=0))
+pipeline.modifiers.append(count_defects)
 
-    try:
-        vp.render_anim(
-            filename=output_file,
-            size=(800, 800), 
-            renderer=renderer,
-            fps=5, 
-            range=(0, pipeline.source.num_frames - 1) 
-        )
-        print(f"GIF 动画已保存到：{os.path.abspath(output_file)}")
-    except Exception as e:
-        print(f"保存 GIF 时发生错误：{e}")
-    finally:
-        pipeline.remove_from_scene() 
-        del pipeline 
+last_frame = pipeline.source.num_frames - 1
+data = pipeline.compute(last_frame)
+fp = data.attributes['Frenkel_pairs']
 
-def main():
-    parser = argparse.ArgumentParser(description="根据输入的轨迹文件生成 GIF 动图")
-    parser.add_argument("--input_file", type=str, default="dump.xyz", help="轨迹文件名")
-    parser.add_argument("--output_file", type=str, default="dump.gif", help="生成的 GIF 文件名")
+summary_path = base_dir / "final_defect_summary.txt"
+summary_path.write_text(f"Timestep\tFrenkel_pairs\n{last_frame}\t{fp}\n", encoding="utf-8")
 
-    args = parser.parse_args()
-    gif_generator(args.input_file, args.output_file)
+energy = None
+cascade_script = base_dir / "cascade.py"
+if cascade_script.exists():
+    for line in cascade_script.read_text(encoding="utf-8").splitlines():
+        if line.strip().startswith("energy"):
+            try:
+                energy = float(line.split("=")[1].split("#")[0].strip())
+            except ValueError:
+                pass
 
+history_path = base_dir / "defect_evolution_history.txt"
+header = "Energy(eV)\tTimestep\tFrenkel_pairs\n"
+line = f"{energy:.2f if energy is not None else 'NaN'}\t{last_frame}\t{fp}\n"
 
-if __name__ == "__main__":
-    main()
-    
+if not history_path.exists() or history_path.stat().st_size == 0:
+    history_path.write_text(header + line, encoding="utf-8")
+else:
+    with history_path.open("a", encoding="utf-8") as f:
+        f.write(line)
+
+print(f"Processing completed. Results saved to: {summary_path} and {history_path}")
