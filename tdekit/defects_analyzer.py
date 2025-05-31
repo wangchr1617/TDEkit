@@ -1,58 +1,57 @@
 from ovito.io import import_file
 from ovito.modifiers import WignerSeitzAnalysisModifier
 from pathlib import Path
-import os
+import argparse
 
 def count_defects(frame, data):
-    """Count and record vacancy and interstitial defects"""
     vacancy = data.attributes['WignerSeitz.vacancy_count']
     interstitial = data.attributes['WignerSeitz.interstitial_count']
     
     if vacancy != interstitial:
-        print(f"Warning: At timestep {frame}, vacancy count ({vacancy}) != interstitial count ({interstitial})")
+        print(f"Warning: Timestep {frame}: Vacancies({vacancy}) != Interstitials({interstitial})")
     
-    data.attributes.update(Frenkel_pairs=interstitial, Timestep=frame)
+    data.attributes.update(
+        Frenkel_pairs=interstitial,
+        Timestep=frame
+    )
+
+def analyze_cascade(base_dir, energy):
+    base_path = Path(base_dir)
+    xyz_path = base_path / "cascade" / "dump.xyz"
+
+    if not xyz_path.exists():
+        raise FileNotFoundError(f"Input file not found: {xyz_path}")
+
+    pipeline = import_file(str(xyz_path))
+    pipeline.source.data.cell = pipeline.compute(0).cell  # 使用初始帧的晶胞
+
+    pipeline.modifiers.append(WignerSeitzAnalysisModifier(reference_frame=0))
+    pipeline.modifiers.append(count_defects)
+
+    final_frame = pipeline.source.num_frames - 1
+    data = pipeline.compute(final_frame)
+    fp = data.attributes['Frenkel_pairs']
+
+    summary = f"{final_frame}\t{fp}\n"
+    (base_path / "final_defect_summary.txt").write_text(
+        "Timestep\tFrenkel_pairs\n" + summary,
+        encoding="utf-8"
+    )
+
+    history_path = base_path / "defect_evolution_history.txt"
+    header = not history_path.exists() or history_path.stat().st_size == 0
     
-base_dir = Path(__file__).parent
-input_xyz = base_dir / "cascade" / "dump.xyz"
+    with history_path.open("a", encoding="utf-8") as f:
+        if header:
+            f.write("Energy(eV)\tTimestep\tFrenkel_pairs\n")
+        f.write(f"{energy:.4f}\t{summary}" if energy else f"NaN\t{summary}")
+    
+    print(f"Results saved to:\n- {base_path/'final_defect_summary.txt'}\n- {history_path}")
 
-if not os.path.exists(input_xyz):
-    print(f"Error: File not found - {input_xyz}")
-    exit(1)
-
-pipeline = import_file(str(input_xyz))
-data0 = pipeline.compute(0)
-pipeline.source.data.cell = data0.cell
-
-pipeline.modifiers.append(WignerSeitzAnalysisModifier(reference_frame=0))
-pipeline.modifiers.append(count_defects)
-
-last_frame = pipeline.source.num_frames - 1
-data = pipeline.compute(last_frame)
-fp = data.attributes['Frenkel_pairs']
-
-summary_path = base_dir / "final_defect_summary.txt"
-summary_path.write_text(f"Timestep\tFrenkel_pairs\n{last_frame}\t{fp}\n", encoding="utf-8")
-
-energy = None
-cascade_script = base_dir / "cascade.py"
-if cascade_script.exists():
-    for line in cascade_script.read_text(encoding="utf-8").splitlines():
-        if line.strip().startswith("energy"):
-            try:
-                energy = float(line.split("=")[1].split("#")[0].strip())
-            except ValueError:
-                pass
-
-history_path = base_dir / "defect_evolution_history.txt"
-header = not os.path.exists(history_path) or os.path.getsize(history_path) == 0
-
-with open(history_path, "a", encoding="utf-8") as f:
-    if header:
-        f.write("Energy(eV)\tTimestep\tFrenkel_pairs\n")
-    if energy is not None:
-        f.write(f"{energy:.4f}\t{last_frame}\t{fp}\n")
-    else:
-        f.write(f"NaN\t{last_frame}\t{fp}\n")
-
-print(f"Processing completed. Results saved to: {summary_path} and {history_path}")
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Analyze atomic cascade defects")
+    parser.add_argument("--base_dir", required=True, help="Base directory of simulation data")
+    parser.add_argument("--energy", type=float, required=True, help="PKA energy in eV")
+    args = parser.parse_args()
+    
+    analyze_cascade(args.base_dir, args.energy)

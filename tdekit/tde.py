@@ -1,102 +1,134 @@
 from pathlib import Path
 import argparse
-import os
 import shutil
 import subprocess
+import numpy as np
+from .core import run_cascade, run_relax
 
-def clean_cascade_dir():
-    if cascade_dir.exists():
-        print("Cleaning cascade directory...")
-        shutil.rmtree(cascade_dir)
+# 配置常量
+INIT_ENERGY = 2.0
+MAX_ENERGY = 1000.0
+PRECISION = 0.01
+CASCADE_DIR_NAME = "cascade"
+DEFECTS_SCRIPT = "defects_analyzer.py"
 
-def update_energy(energy):
-    with open(cascade_script, 'r') as f:
-        lines = f.readlines()
-    
-    with open(cascade_script, 'w') as f:
-        for line in lines:
-            if line.strip().startswith("energy"):
-                f.write(f"energy = {energy:.2f}  # eV\n")
-            else:
-                f.write(line)
+def clean_directory(dir_path):
+    """清理指定目录"""
+    if dir_path.exists():
+        print(f"Cleaning directory: {dir_path}")
+        shutil.rmtree(dir_path)
 
-def run_sim():
-    subprocess.run(["python", cascade_script], check=True)
-    
-    apptainer_cmd = [
-        "apptainer", 
-        "exec", 
+def run_defects_analyzer(base_dir, energy):
+    """运行缺陷分析脚本"""
+    script_path = Path(__file__).resolve().parent / DEFECTS_SCRIPT
+    command = [
+        "apptainer", "exec", 
         "/opt/software/ovito-3.12.3/bin/ovito_python.sif",
-        "python", 
-        defect_script
+        "python", str(script_path), 
+        "--base_dir", str(base_dir), 
+        "--energy", str(energy)
     ]
-    subprocess.run(apptainer_cmd, check=True)
+    subprocess.run(command, check=True)
 
-def read_fp_count():
+def read_frenkel_pairs(base_dir):
+    """从结果文件中读取Frenkel对数量"""
     summary_file = base_dir / "final_defect_summary.txt"
-    with open(summary_file, 'r') as f:
-        lines = f.readlines()
-        if len(lines) < 2:
-            return 0
-        return int(lines[-1].split("\t")[-1])
-
-base_dir = Path(__file__).parent
-relax_path = base_dir / "relax" / "restart.xyz"
-cascade_dir = base_dir / "cascade"
-relax_script = "relax.py"
-cascade_script = "cascade.py"
-defect_script = "defects_analyzer.py"
-
-init_energy = 2.0    
-max_energy = 1000.0  
-precision = 0.01     
-
-if not relax_path.exists():
-    print("restart.xyz not found. Running relax.py...")
-    subprocess.run(["python", relax_script], check=True)
-else:
-    print("restart.xyz already exists")
-
-print("Starting exponential growth search...")
-low_energy = init_energy
-high_energy = None
-current_energy = low_energy
-
-while current_energy <= max_energy:
-    print(f"Testing energy: {current_energy:.2f} eV")
-    clean_cascade_dir()
-    update_energy(current_energy)
-    run_sim()
-    fp_count = read_fp_count()
-    print(f"Frenkel pairs: {fp_count}")
+    if not summary_file.exists():
+        return 0
     
-    if fp_count > 0:
-        high_energy = current_energy
-        break
-    else:
-        low_energy = current_energy
+    with summary_file.open() as f:
+        last_line = f.readlines()[-1].strip()
+        return int(last_line.split("\t")[-1])
+
+def run_cascade_simulation(base_dir, energy, input_file):
+    """运行级联模拟和分析"""
+    cascade_dir = base_dir / CASCADE_DIR_NAME
+    
+    # 清理并运行级联模拟
+    clean_directory(cascade_dir)
+    run_cascade(
+        input_file=input_file, 
+        energy=energy, 
+        direction=np.array([0, 0, 1])
+    )
+    
+    # 运行缺陷分析
+    run_defects_analyzer(base_dir, energy)
+    return read_frenkel_pairs(base_dir)
+
+def exponential_growth_search(base_dir, input_file):
+    """指数增长搜索阶段"""
+    print("\nStarting exponential growth search...")
+    current_energy = INIT_ENERGY
+    high_energy = None
+    
+    while current_energy <= MAX_ENERGY:
+        fp_count = run_cascade_simulation(base_dir, current_energy, input_file)
+        print(f"Energy: {current_energy:.2f}eV -> Frenkel pairs: {fp_count}")
+        
+        if fp_count > 0:
+            high_energy = current_energy
+            print(f"First damage found at {high_energy:.2f}eV")
+            break
+        
         current_energy *= 2
-
-if high_energy is None:
-    raise RuntimeError("Maximum energy limit exceeded")
-
-print("Starting binary search...")
-while abs(high_energy - low_energy) > precision:
-    mid_energy = round((low_energy + high_energy) / 2, 2)
-    print(f"Testing energy: {mid_energy:.2f} eV")
     
-    clean_cascade_dir()
-    update_energy(mid_energy)
-    run_sim()
-    fp_count = read_fp_count()
-    print(f"Frenkel pairs: {fp_count}")
+    if high_energy is None:
+        raise RuntimeError(f"No damage found below {MAX_ENERGY}eV")
+    
+    return high_energy, current_energy / 2
 
-    if fp_count > 0:
-        high_energy = mid_energy
+def binary_search(base_dir, input_file, low, high):
+    """二分搜索阶段"""
+    print("\nStarting binary search...")
+    iteration = 0
+    max_iterations = 100
+    while abs(high - low) > PRECISION and iteration < max_iterations:
+        mid_energy = (low + high) / 2
+        fp_count = run_cascade_simulation(base_dir, mid_energy, input_file)
+        print(f"Energy: {mid_energy:.2f}eV -> Frenkel pairs: {fp_count}")
+        if fp_count > 0:
+            high = mid_energy
+        else:
+            low = mid_energy
+        iteration += 1
+    if iteration >= max_iterations:
+        print(f"Warning: Maximum iterations ({max_iterations}) reached")
+        print(f"Final values: Low={low:.3f}eV, High={high:.3f}eV")
+    return high
+
+def find_tde(base_dir):
+    """查找位移能量阈值(TDE)"""
+    # 准备文件路径
+    base_dir = Path(base_dir)
+    xyz_path = base_dir / "model.xyz"
+    relax_path = base_dir / "relax" / "restart.xyz"
+    cascade_dir = base_dir / CASCADE_DIR_NAME
+    
+    # 运行松弛计算（如果需需要）
+    if not relax_path.exists():
+        print("Running relaxation calculation...")
+        run_relax(
+            input_file=xyz_path, 
+            nx=15, ny=9, nz=2, 
+            thickness=7
+        )
     else:
-        low_energy = mid_energy
+        print("Using existing relaxation results")
+    
+    # 搜索过程
+    damage_energy, no_damage_energy = exponential_growth_search(base_dir, relax_path)
+    tde = binary_search(base_dir, relax_path, no_damage_energy, damage_energy)
+    
+    # 清理并打印结果
+    clean_directory(cascade_dir)
+    print(f"\nSearch completed! TDE: {tde:.2f}eV")
+    return tde
 
-print("\nSearch completed!")
-print(f"TDE: {high_energy:.2f} eV")
-
-clean_cascade_dir()
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Calculate Threshold Displacement Energy (TDE)")
+    parser.add_argument("--base_dir", required=True, help="Base directory of simulation data")
+    args = parser.parse_args()
+    
+    find_tde(Path(args.base_dir))
+    

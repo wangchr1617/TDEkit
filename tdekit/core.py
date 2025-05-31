@@ -1,4 +1,5 @@
 from ase import Atoms
+from ase.io import read
 import numpy as np
 import os
 import shutil
@@ -135,3 +136,47 @@ def set_pka(atoms, energy, direction, index=None, symbol=None, scaled_position=(
     print(f'Mass: {atoms[index].mass:.2f}')
     print(f'Velocity: {atoms.info["velocities"][index][0]:.2f}, {atoms.info["velocities"][index][1]:.2f}, {atoms.info["velocities"][index][2]:.2f}')
 
+def run_cascade(input_file='relax/restart.xyz', energy=3, direction=np.array([0, 0, 1])):
+    atoms = read_restart(input_file)
+    set_pka(atoms, energy, direction)
+    run_in = [
+        'potential nep.txt',
+        'velocity 300',
+        'time_step 0',
+        'ensemble nve',
+        'dump_exyz 1',
+        'run 1',
+        'time_step 1 0.01',
+        'ensemble heat_nhc 300 100 0 0 1',
+        'compute 0 200 10 temperature',
+        'dump_restart 10000',
+        'dump_exyz 2000 1 1',
+        'run 30000'
+    ]
+    run_gpumd(atoms, 'cascade', run_in)
+    
+def run_relax(input_file="model.xyz", nx=15, ny=9, nz=2, thickness=7):
+    atoms = read(input_file) * (nx, ny, nz)
+    cell = atoms.cell
+    group = [0 if (atom.position[0] < thickness or
+                   atom.position[1] < thickness or
+                   atom.position[2] < thickness)
+             else (1 if (atom.position[0] >= cell[0, 0] - thickness or
+                         atom.position[1] >= cell[1, 1] - thickness or
+                         atom.position[2] >= cell[2, 2] - thickness)
+                   else 2)
+             for atom in atoms]
+    atoms.info['group'] = group
+    
+    run_in = [
+        'potential nep.txt',
+        'velocity 300',
+        'time_step 1',
+        'ensemble npt_scr 300 300 100 0 100 1000',
+        'dump_thermo 1000',
+        'dump_restart 50000',
+        'dump_exyz 1000 1 1',
+        'run 50000'
+    ]
+    
+    run_gpumd(atoms, 'relax', run_in)
