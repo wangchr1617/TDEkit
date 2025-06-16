@@ -1,6 +1,7 @@
+from calorine.calculators import CPUNEP
+from tdekit import ForceAnalyzer
 import matplotlib.pyplot as plt
 import numpy as np
-from tdekit import ForceAnalyzer
 
 calculators = [CPUNEP('./0.txt'),
                CPUNEP('./1.txt'),

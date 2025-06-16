@@ -1,0 +1,16 @@
+#PBS -N active
+#PBS -l nodes=1:ppn=24
+#PBS -l walltime=24:00:00
+#PBS -q fast
+#PBS -S /bin/bash
+#PBS -V
+
+NP=`cat $PBS_NODEFILE | wc -l`
+NN=`cat $PBS_NODEFILE | sort | uniq | tee /tmp/nodes.$$ | wc -l`
+
+cat $PBS_NODEFILE > /tmp/nodefile.$$
+cd $PBS_O_WORKDIR
+ulimit -s unlimited
+
+python test_active.py >> output
+

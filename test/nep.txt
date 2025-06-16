@@ -1,5 +1,4 @@
-nep4_zbl 2 Sb Te 
-zbl 1 2
+nep4 2 Sb Te 
 cutoff 8 4 83 14
 n_max 4 4
 basis_size 8 8

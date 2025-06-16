@@ -2,7 +2,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import os
 from .core import read_xyz, dump_xyz
-from calorine.calculators import CPUNEP
 from time import time
 
 class ForceAnalyzer:

@@ -1,4 +1,4 @@
-from .tde import find_tde
+from .tde import TDESearch
 from .active import ForceAnalyzer
 
 __version__ = "0.1.0"

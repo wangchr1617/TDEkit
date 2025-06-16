@@ -1,5 +1,4 @@
-nep4_zbl 2 Te Ge 
-zbl 1 1.5
+nep4 2 Te Ge 
 cutoff 8 8 136 136
 n_max 4 4
 basis_size 8 8
