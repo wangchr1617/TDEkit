@@ -8,22 +8,22 @@ def count_defects(frame, data):
     interstitial = data.attributes['WignerSeitz.interstitial_count']
     
     if vacancy != interstitial:
-        print(f"Warning: Timestep {frame}: Vacancies({vacancy}) != Interstitials({interstitial})")
+        print(f"Warning: Timestep {frame}: Vacancies({vacancy}) != Interstitials({interstitial})", flush=True)
     
     data.attributes.update(
         Frenkel_pairs=interstitial,
         Timestep=frame
     )
 
-def analyze_cascade(base_dir, energy):
+def analyze_cascade(base_dir, cascade_dir, energy):
     base_path = Path(base_dir)
-    xyz_path = base_path / "cascade" / "dump.xyz"
+    xyz_path = base_path / cascade_dir / "dump.xyz"
 
     if not xyz_path.exists():
         raise FileNotFoundError(f"Input file not found: {xyz_path}")
 
     pipeline = import_file(str(xyz_path))
-    pipeline.source.data.cell = pipeline.compute(0).cell  # 使用初始帧的晶胞
+    pipeline.source.data.cell = pipeline.compute(0).cell
 
     pipeline.modifiers.append(WignerSeitzAnalysisModifier(reference_frame=0))
     pipeline.modifiers.append(count_defects)
@@ -46,12 +46,13 @@ def analyze_cascade(base_dir, energy):
             f.write("Energy(eV)\tTimestep\tFrenkel_pairs\n")
         f.write(f"{energy:.4f}\t{summary}" if energy else f"NaN\t{summary}")
     
-    print(f"Results saved to:\n- {base_path/'final_defect_summary.txt'}\n- {history_path}")
+    print(f"Results saved to:\n- {base_path/'final_defect_summary.txt'}\n- {history_path}", flush=True)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Analyze atomic cascade defects")
     parser.add_argument("--base_dir", required=True, help="Base directory of simulation data")
+    parser.add_argument("--cascade_dir", required=True, help="Cascade directory of simulation data")
     parser.add_argument("--energy", type=float, required=True, help="PKA energy in eV")
     args = parser.parse_args()
     
-    analyze_cascade(args.base_dir, args.energy)
+    analyze_cascade(args.base_dir, args.cascade_dir, args.energy)

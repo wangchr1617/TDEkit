@@ -91,7 +91,7 @@ def read_xyz(filename):
                 floats = list(map(float, values))
                 cell = [floats[0:3], floats[3:6], floats[6:9]]
             else:
-                print(f"Invalid lattice format: {lattice_str}")
+                print(f"Invalid lattice format: {lattice_str}", flush=True)
                 cell = np.eye(3) 
             if "energy=" in comment:
                 energy = float(comment.split("energy=")[1].split()[0])
@@ -205,15 +205,15 @@ def run_gpumd(atoms, dirname, run_in, nep_path='nep.txt', electron_stopping_path
         raise FileExistsError('Directory already exists')
     os.makedirs(dirname)
     if os.path.exists(nep_path):
-        shutil.copy(nep_path, dirname)
+        shutil.copy(nep_path, os.path.join(dirname, 'nep.txt'))
     else:
-        raise FileNotFoundError('nep.txt does not exist')
+        print(f'NEP file {nep_path} does not exist')
     original_directory = os.getcwd()
     os.chdir(dirname)
     write_run(run_in)
     with open('model.xyz', 'w') as f:
         dump_xyz(f, atoms)
-    os.system('gpumd')
+    os.system('gpumd > gpumd.out 2>&1')
     os.chdir(original_directory)
           
 def set_pka(atoms, energy, direction, index=None, symbol=None, scaled_position=(0.5, 0.5 ,0.5)):
@@ -239,32 +239,44 @@ def set_pka(atoms, energy, direction, index=None, symbol=None, scaled_position=(
     atoms_masses = np.array(atoms.get_masses())
     atoms.info['velocities'] += delta_momentum / atoms_masses[:, np.newaxis]
     atoms.info['velocities'][index] = [vx, vy, vz]
-    print(f'Index: {index}')
-    print(f'Symbol: {atoms[index].symbol}')
-    print(f'Position: {atoms[index].position[0]:.2f}, {atoms[index].position[1]:.2f}, {atoms[index].position[2]:.2f}')
-    print(f'Mass: {atoms[index].mass:.2f}')
-    print(f'Velocity: {atoms.info["velocities"][index][0]:.2f}, {atoms.info["velocities"][index][1]:.2f}, {atoms.info["velocities"][index][2]:.2f}')
+    print(f'Index: {index}', flush=True)
+    print(f'Symbol: {atoms[index].symbol}', flush=True)
+    print(f'Position: {atoms[index].position[0]:.6f}, {atoms[index].position[1]:.6f}, {atoms[index].position[2]:.6f}', flush=True)
+    print(f'Mass: {atoms[index].mass:.2f}', flush=True)
+    print(f'Velocity: {atoms.info["velocities"][index][0]:.6f}, {atoms.info["velocities"][index][1]:.6f}, {atoms.info["velocities"][index][2]:.6f}', flush=True)
 
-def run_cascade(input_file='relax/restart.xyz', energy=3, direction=np.array([0, 0, 1])):
+def run_cascade(run_in=None, 
+                dirname='cascade', 
+                input_file='relax/restart.xyz', 
+                energy=3, 
+                direction=np.array([0, 0, 1]), 
+                **kwargs):
     atoms = read_restart(input_file)
-    set_pka(atoms, energy, direction)
-    run_in = [
-        'potential nep.txt',
-        'velocity 300',
-        'time_step 0',
-        'ensemble nve',
-        'dump_exyz 1',
-        'run 1',
-        'time_step 1 0.01',
-        'ensemble heat_nhc 300 100 0 0 1',
-        'compute 0 200 10 temperature',
-        'dump_restart 10000',
-        'dump_exyz 2000 1 1',
-        'run 30000'
-    ]
-    run_gpumd(atoms, 'cascade', run_in)
+    set_pka(atoms, energy, direction, **kwargs)
+    if run_in is None:
+        run_in = [
+            'potential nep.txt',
+            'velocity 300',
+            'time_step 0',
+            'ensemble nve',
+            'dump_exyz 1',
+            'run 1',
+            'time_step 1 0.01',
+            'ensemble heat_nhc 300 100 0 0 1',
+            'compute 0 200 10 temperature',
+            'dump_restart 10000',
+            'dump_exyz 2000 1 1',
+            'run 30000'
+        ]
+    run_gpumd(atoms, dirname, run_in)
     
-def run_relax(input_file="model.xyz", nx=15, ny=9, nz=2, thickness=7):
+def run_relax(run_in=None, 
+              dirname='relax', 
+              input_file="model.xyz", 
+              nx=15, 
+              ny=9, 
+              nz=2, 
+              thickness=7):
     atoms = read(input_file) * (nx, ny, nz)
     cell = atoms.cell
     group = [0 if (atom.position[0] < thickness or
@@ -276,16 +288,16 @@ def run_relax(input_file="model.xyz", nx=15, ny=9, nz=2, thickness=7):
                    else 2)
              for atom in atoms]
     atoms.info['group'] = group
+    if run_in is None:
+        run_in = [
+            'potential nep.txt',
+            'velocity 300',
+            'time_step 1',
+            'ensemble npt_scr 300 300 100 0 100 1000',
+            'dump_thermo 1000',
+            'dump_restart 50000',
+            'dump_exyz 1000 1 1',
+            'run 50000'
+        ]
     
-    run_in = [
-        'potential nep.txt',
-        'velocity 300',
-        'time_step 1',
-        'ensemble npt_scr 300 300 100 0 100 1000',
-        'dump_thermo 1000',
-        'dump_restart 50000',
-        'dump_exyz 1000 1 1',
-        'run 50000'
-    ]
-    
-    run_gpumd(atoms, 'relax', run_in)
+    run_gpumd(atoms, dirname, run_in)

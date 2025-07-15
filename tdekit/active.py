@@ -36,7 +36,7 @@ class ForceAnalyzer:
         return max_deltas
 
     def compute_max_deltas(self, frames, path, label):
-        print(f"[COMPUTE] Starting max_delta computation for {label} ({len(frames)} frames)")
+        print(f"[COMPUTE] Starting max_delta computation for {label} ({len(frames)} frames)", flush=True)
         max_deltas = np.empty(len(frames))
         start_time = time()
         last_report_time = start_time
@@ -49,7 +49,7 @@ class ForceAnalyzer:
                 atoms.calc = calculator
                 forces = atoms.get_forces()
                 if len(forces) != n_atoms:
-                    print(f"[WARNING] Frame {idx}: Force array shape mismatch ({len(forces)} vs {n_atoms})")
+                    print(f"[WARNING] Frame {idx}: Force array shape mismatch ({len(forces)} vs {n_atoms})", flush=True)
                     forces = np.zeros((n_atoms, 3))
                 force_matrix[calc_idx] = forces
             
@@ -65,12 +65,12 @@ class ForceAnalyzer:
                 remaining = (len(frames) - idx - 1) / speed if speed > 0 else 0
                 print(f"[PROGRESS] {path}: Processed {idx+1}/{len(frames)} frames "
                       f"({(idx+1)/len(frames)*100:.1f}%) | Speed: {speed:.1f} fps | "
-                      f"ETA: {remaining:.0f}s | Current max_delta: {max_deltas[idx]:.6f}")
+                      f"ETA: {remaining:.0f}s | Current max_delta: {max_deltas[idx]:.6f}", flush=True)
                 last_report_time = current_time
         
         total_time = time() - start_time
         print(f"[COMPLETE] Finished {label} in {total_time:.1f}s "
-              f"({total_time/len(frames):.4f}s/frame) | Atoms varied: {len(frames[0])}→{len(frames[-1])}")
+              f"({total_time/len(frames):.4f}s/frame) | Atoms varied: {len(frames[0])}→{len(frames[-1])}", flush=True)
         
         self.save_max_deltas_to_txt(max_deltas, path, label)
         return max_deltas
@@ -84,7 +84,7 @@ class ForceAnalyzer:
             f.write(f"# Label: {label}\n")
             f.write(f"# Num_frames: {len(max_deltas)}\n")
             f.write("\n".join(map(str, max_deltas)))
-        print(f"Saved max_deltas to: {filename}")
+        print(f"Saved max_deltas to: {filename}", flush=True)
 
     def load_max_deltas_from_txt(self, filename, path, label):
         with open(filename, 'r') as f:
@@ -102,7 +102,7 @@ class ForceAnalyzer:
         return bin_centers, frequencies
 
     def split_xyz(self, frames, max_deltas, path, label):
-        print(f"[SPLIT] Starting XYZ splitting for {label}")
+        print(f"[SPLIT] Starting XYZ splitting for {label}", flush=True)
         os.makedirs(self.xyz_dir, exist_ok=True)
         base_name = os.path.basename(path).replace('.', '_')
         selected_filename = f"{self.xyz_dir}/{base_name}_{label}_selected.xyz"
@@ -116,9 +116,9 @@ class ForceAnalyzer:
 
     def plot_max_force_differences(self, ax, if_split=False):
         for path, label in zip(self.frame_paths, self.frame_labels):
-            print(f"Processing path: {path} for label: {label}")
+            print(f"Processing path: {path} for label: {label}", flush=True)
             frames = read_xyz(path)
-            print(f"Read {len(frames)} frames from {path}")
+            print(f"Read {len(frames)} frames from {path}", flush=True)
             if self.load_max_delta:
                 base_name = os.path.basename(path).replace('.', '_')
                 filename = f"{self.max_delta_dir}/{base_name}_{label}_max_deltas.txt"

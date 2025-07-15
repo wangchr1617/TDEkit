@@ -1,3 +1,4 @@
+from .tde import generate_direction_table
 from .tde import TDESearch
 from .active import ForceAnalyzer
 
