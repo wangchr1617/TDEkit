@@ -37,6 +37,10 @@ class ForceAnalyzer:
 
     def compute_max_deltas(self, frames, path, label):
         print(f"[COMPUTE] Starting max_delta computation for {label} ({len(frames)} frames)", flush=True)
+        if len(frames) == 0:
+            print("[COMPLETE] Empty frame list - nothing to process", flush=True)
+            return np.array([])
+        
         max_deltas = np.empty(len(frames))
         start_time = time()
         last_report_time = start_time
@@ -69,8 +73,14 @@ class ForceAnalyzer:
                 last_report_time = current_time
         
         total_time = time() - start_time
+        atom_info = ""
+        if frames: 
+            initial_atoms = len(frames[0])
+            final_atoms = len(frames[-1])
+            atom_info = f" | Atoms varied: {initial_atoms}→{final_atoms}"
+        
         print(f"[COMPLETE] Finished {label} in {total_time:.1f}s "
-              f"({total_time/len(frames):.4f}s/frame) | Atoms varied: {len(frames[0])}→{len(frames[-1])}", flush=True)
+              f"({total_time/len(frames):.4f}s/frame){atom_info}", flush=True)
         
         self.save_max_deltas_to_txt(max_deltas, path, label)
         return max_deltas
@@ -90,7 +100,7 @@ class ForceAnalyzer:
         with open(filename, 'r') as f:
             lines = f.readlines()
         max_deltas = []
-        for line in lines[4:]:
+        for line in lines[3:]:
             max_deltas.append(float(line.strip()))
         return np.array(max_deltas)
 
@@ -101,20 +111,26 @@ class ForceAnalyzer:
         frequencies = counts / len(max_deltas) * 100
         return bin_centers, frequencies
 
-    def split_xyz(self, frames, max_deltas, path, label):
+    def split_xyz(self, frames, max_deltas, path, label, if_unsel):
         print(f"[SPLIT] Starting XYZ splitting for {label}", flush=True)
         os.makedirs(self.xyz_dir, exist_ok=True)
         base_name = os.path.basename(path).replace('.', '_')
         selected_filename = f"{self.xyz_dir}/{base_name}_{label}_selected.xyz"
-        unselected_filename = f"{self.xyz_dir}/{base_name}_{label}_unselected.xyz"
-        with open(selected_filename, 'a') as f_sel, open(unselected_filename, 'a') as f_unsel:
-            for max_delta, atoms in zip(max_deltas, frames):
-                if self.minimum < max_delta < self.maximum:
-                    dump_xyz(f_sel, atoms)
-                else:
-                    dump_xyz(f_unsel, atoms)
+        with open(selected_filename, 'a') as f_sel:
+            if if_unsel:
+                unselected_filename = f"{self.xyz_dir}/{base_name}_{label}_unselected.xyz"
+                with open(unselected_filename, 'a') as f_unsel:
+                    for max_delta, atoms in zip(max_deltas, frames):
+                        if self.minimum <= max_delta < self.maximum:
+                            dump_xyz(f_sel, atoms)
+                        else:
+                            dump_xyz(f_unsel, atoms)
+            else:
+                for max_delta, atoms in zip(max_deltas, frames):
+                    if self.minimum <= max_delta < self.maximum:
+                        dump_xyz(f_sel, atoms)
 
-    def plot_max_force_differences(self, ax, if_split=False):
+    def plot_max_force_differences(self, ax, if_split=False, if_unsel=True):
         for path, label in zip(self.frame_paths, self.frame_labels):
             print(f"Processing path: {path} for label: {label}", flush=True)
             frames = read_xyz(path)
@@ -126,8 +142,9 @@ class ForceAnalyzer:
             else:
                 max_deltas = self.compute_max_deltas(frames, path, label)
             if if_split:
-                self.split_xyz(frames, max_deltas, path, label)
+                self.split_xyz(frames, max_deltas, path, label, if_unsel)
             bin_centers, frequencies = self.compute_frequency(max_deltas)
             ax.plot(bin_centers, frequencies, label=label, marker='o', markersize=4)
         ax.axvline(x=self.minimum, color='k')
         ax.axvline(x=self.maximum, color='k')
+        ax.axvspan(xmin=self.minimum, xmax=self.maximum, facecolor="#E5A79A", alpha=0.5, zorder=0)
