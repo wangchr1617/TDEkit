@@ -54,9 +54,10 @@ def generate_direction_table(hmax):
 RELAXDIR = "relax/"
 CASCADEDIR = "cascade/"
 class TDESearch:
-    def __init__(self, base_dir="./", init_energy=2, max_energy=1000, precision=0.01, 
-                 nx=1, ny=1, nz=1, thickness=5, direction=np.array([0, 0, 1])):
-        self.base_dir = Path(base_dir)
+    def __init__(self, base_dir="./", init_energy=1, max_energy=1000, precision=0.01, 
+                 nx=1, ny=1, nz=1, thickness=1, direction=np.array([0, 0, 1])):
+        self.base_dir = Path(base_dir).resolve()
+        self.work_dir = self.base_dir / CASCADEDIR
         self.init_energy = init_energy
         self.max_energy = max_energy
         self.precision = precision
@@ -66,11 +67,11 @@ class TDESearch:
         self.thickness = thickness
         self.direction = direction
     
-    def set_base_dir(self, new_base_dir):
-        self.base_dir = Path(new_base_dir)
+    def set_work_dir(self, work_dir):
+        self.work_dir = Path(work_dir).resolve()
     
-    def set_direction(self, new_direction):
-        self.direction = new_direction
+    def set_direction(self, direction):
+        self.direction = direction
 
     def clean_directory(self, directory):
         if directory.exists():
@@ -79,44 +80,41 @@ class TDESearch:
 
     def run_defects_analyzer(self, energy):
         script_path = Path(__file__).resolve().parent / "defects_analyzer.py"
-        command = [
-            "apptainer", "exec", 
-            "/opt/software/ovito-3.12.3/bin/ovito_python.sif",
-            "python", str(script_path), 
-            "--base_dir", str(self.base_dir),
-            "--cascade_dir", CASCADEDIR,
-            "--energy", str(energy)
-        ]
+        command = ["apptainer", "exec", 
+                   "/opt/software/ovito-3.12.3/bin/ovito_python.sif",
+                   "python", str(script_path),
+                   "--work_dir", str(self.work_dir),
+                   "--cascade_dir", str(self.work_dir / CASCADEDIR),
+                   "--energy", str(energy)]
         subprocess.run(command, check=True)
 
     def read_frenkel_pairs(self):
-        summary_file = self.base_dir / "final_defect_summary.txt"
+        summary_file = self.work_dir / "final_defect_summary.txt"
         if not summary_file.exists():
             return 0
         with summary_file.open() as f:
             last_line = f.readlines()[-1].strip()
             return int(last_line.split("\t")[-1])
             
-    def run_relax_simulation(self):
+    def run_relax_simulation(self, **kwargs):
         relax_dir = self.base_dir / RELAXDIR
-        xyz_path = self.base_dir / "model.xyz"
         run_relax(dirname=relax_dir,
-                  input_file=xyz_path, 
-                  nx=self.nx, 
-                  ny=self.ny, 
-                  nz=self.nz, 
-                  thickness=self.thickness)
+                  nx=self.nx,
+                  ny=self.ny,
+                  nz=self.nz,
+                  thickness=self.thickness, 
+                  **kwargs)
         restart_path = relax_dir / "restart.xyz"
         return restart_path
 
-    def run_cascade_simulation(self, energy, input_file, **kwargs):
-        cascade_dir = self.base_dir / CASCADEDIR
-        self.clean_directory(cascade_dir)
-        run_cascade(dirname=cascade_dir, 
-                    input_file=input_file, 
-                    energy=energy, 
-                    direction=self.direction, 
-                    **kwargs)
+    def run_cascade_simulation(self, energy, **kwargs):
+        self.clean_directory(self.work_dir / CASCADEDIR)
+        run_cascade(
+            dirname=self.work_dir / CASCADEDIR,
+            energy=energy,
+            direction=self.direction,
+            **kwargs
+        )
         self.run_defects_analyzer(energy)
         return self.read_frenkel_pairs()
 
@@ -155,12 +153,11 @@ class TDESearch:
         return high_energy
 
     def find_tde(self, input_file, **kwargs):
-        cascade_dir = self.base_dir / CASCADEDIR
         if input_file is None:
             print("Please run relax simulation first!", flush=True)
         damage_energy, no_damage_energy = self.exponential_growth_search(input_file, **kwargs)
         tde = self.binary_search(no_damage_energy, damage_energy, input_file, **kwargs)
-        self.clean_directory(cascade_dir)
+        self.clean_directory(self.work_dir / CASCADEDIR)
         print(f"\nSearch completed! TDE: {tde:.3f}eV", flush=True)
         return tde
     

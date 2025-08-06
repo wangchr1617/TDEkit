@@ -21,18 +21,21 @@ def parsed_properties(comment):
         start += property_count
     return parsed_properties
 
-def read_symbols(words_in_line, parsed_properties):
+def read_symbols(words_in_line, 
+                 parsed_properties):
     symbol_slice = parsed_properties['species']
     symbol = words_in_line[symbol_slice]
     symbol = symbol[0].lower().capitalize()
     return symbol
 
-def read_positions(words_in_line, parsed_properties):
+def read_positions(words_in_line, 
+                   parsed_properties):
     pos_slice = parsed_properties['pos']
     pos = words_in_line[pos_slice]
     return [float(pos[0]), float(pos[1]), float(pos[2])]
 
-def read_mass(words_in_line, parsed_properties):
+def read_mass(words_in_line, 
+              parsed_properties):
     if 'mass' in parsed_properties:
         mass_slice = parsed_properties['mass']
         mass = words_in_line[mass_slice]
@@ -40,7 +43,8 @@ def read_mass(words_in_line, parsed_properties):
     else:
         return None
 
-def read_force(words_in_line, parsed_properties):
+def read_force(words_in_line, 
+               parsed_properties):
     force_key = 'forces' if 'forces' in parsed_properties else 'force'
     if force_key in parsed_properties:
         force_slice = parsed_properties[force_key]
@@ -49,7 +53,8 @@ def read_force(words_in_line, parsed_properties):
     else:
         return None
     
-def read_group(words_in_line, parsed_properties):
+def read_group(words_in_line, 
+               parsed_properties):
     if 'group' in parsed_properties:
         group_slice = parsed_properties['group']
         group = words_in_line[group_slice]
@@ -57,7 +62,8 @@ def read_group(words_in_line, parsed_properties):
     else:
         return None
 
-def read_velocity(words_in_line, parsed_properties):
+def read_velocity(words_in_line, 
+                  parsed_properties):
     if 'vel' in parsed_properties:
         vel_slice = parsed_properties['vel']
         vel = words_in_line[vel_slice]
@@ -91,7 +97,7 @@ def read_xyz(filename):
                 floats = list(map(float, values))
                 cell = [floats[0:3], floats[3:6], floats[6:9]]
             else:
-                print(f"Invalid lattice format: {lattice_str}", flush=True)
+                print(f"Warning: Invalid lattice format: {lattice_str}", flush=True)
                 cell = np.eye(3) 
             if "energy=" in comment:
                 energy = float(comment.split("energy=")[1].split()[0])
@@ -199,30 +205,20 @@ def read_restart(filename):
                 masses.append(mass)  
             atoms = Atoms(symbols=symbols, positions=positions, masses=masses, cell=cell, pbc=pbc, info={'velocities': velocities})
     return atoms
-        
-def run_gpumd(atoms, dirname, run_in, nep_path='nep.txt', electron_stopping_path = 'electron_stopping_fit.txt'):
-    if os.path.exists(dirname):
-        raise FileExistsError('Directory already exists')
-    os.makedirs(dirname)
-    if os.path.exists(nep_path):
-        shutil.copy(nep_path, os.path.join(dirname, 'nep.txt'))
-    else:
-        print(f'NEP file {nep_path} does not exist')
-    original_directory = os.getcwd()
-    os.chdir(dirname)
-    write_run(run_in)
-    with open('model.xyz', 'w') as f:
-        dump_xyz(f, atoms)
-    os.system('gpumd > gpumd.out 2>&1')
-    os.chdir(original_directory)
           
-def set_pka(atoms, energy, direction, index=None, symbol=None, scaled_position=(0.5, 0.5 ,0.5)):
+def set_pka(atoms, 
+            energy, 
+            direction, 
+            index=None, 
+            symbol=None, 
+            scaled_position=(0.5,0.5,0.5),
+            **kwargs):
     if atoms.info['velocities'] is None:
         raise ValueError('The velocities of atoms are not set.')
 
     if index is None:
         cell = atoms.get_cell()
-        target_positions = sum(c * r for c, r in zip(cell, scaled_position))
+        target_positions = sum(c*r for c, r in zip(cell, scaled_position))
         if symbol is None:
             index = np.argmin(np.sum((atoms.positions - target_positions)**2, axis=1))
         else:
@@ -239,65 +235,54 @@ def set_pka(atoms, energy, direction, index=None, symbol=None, scaled_position=(
     atoms_masses = np.array(atoms.get_masses())
     atoms.info['velocities'] += delta_momentum / atoms_masses[:, np.newaxis]
     atoms.info['velocities'][index] = [vx, vy, vz]
-    print(f'Index: {index}', flush=True)
-    print(f'Symbol: {atoms[index].symbol}', flush=True)
+    print(f'Index:    {index}', flush=True)
+    print(f'Symbol:   {atoms[index].symbol}', flush=True)
     print(f'Position: {atoms[index].position[0]:.6f}, {atoms[index].position[1]:.6f}, {atoms[index].position[2]:.6f}', flush=True)
-    print(f'Mass: {atoms[index].mass:.2f}', flush=True)
+    print(f'Mass:     {atoms[index].mass:.2f}', flush=True)
     print(f'Velocity: {atoms.info["velocities"][index][0]:.6f}, {atoms.info["velocities"][index][1]:.6f}, {atoms.info["velocities"][index][2]:.6f}', flush=True)
+    print('--------------------', flush=True)
 
-def run_cascade(run_in=None, 
-                dirname='cascade', 
-                input_file='relax/restart.xyz', 
-                energy=3, 
-                direction=np.array([0, 0, 1]), 
+def run_gpumd(atoms, 
+              dirname, 
+              run_in, 
+              nep_path="./nep.txt",
+              **kwargs):
+    if os.path.exists(dirname):
+        raise FileExistsError('Directory already exists')
+    os.makedirs(dirname)
+    if os.path.exists(nep_path):
+        shutil.copy(nep_path, os.path.join(dirname, 'nep.txt'))
+    else:
+        print(f'Warning: {nep_path} does not exist!')
+    original_directory = os.getcwd()
+    os.chdir(dirname)
+    write_run(run_in)
+    with open('model.xyz', 'w') as f:
+        dump_xyz(f, atoms)
+    os.system('gpumd > gpumd.out 2>&1')
+    os.chdir(original_directory)
+    
+def run_cascade(dirname, 
+                input_file, 
+                energy=1, 
+                direction=np.array([0, 0, 1]),
                 **kwargs):
     atoms = read_restart(input_file)
     set_pka(atoms, energy, direction, **kwargs)
-    if run_in is None:
-        run_in = [
-            'potential nep.txt',
-            'velocity 300',
-            'time_step 0',
-            'ensemble nve',
-            'dump_exyz 1',
-            'run 1',
-            'time_step 1 0.01',
-            'ensemble heat_nhc 300 100 0 0 1',
-            'compute 0 200 10 temperature',
-            'dump_restart 10000',
-            'dump_exyz 2000 1 1',
-            'run 30000'
-        ]
-    run_gpumd(atoms, dirname, run_in)
+    run_gpumd(atoms, dirname, **kwargs)
     
-def run_relax(run_in=None, 
-              dirname='relax', 
-              input_file="model.xyz", 
-              nx=15, 
-              ny=9, 
-              nz=2, 
-              thickness=7):
+def run_relax(dirname, 
+              input_file, 
+              nx=1, 
+              ny=1, 
+              nz=1, 
+              thickness=1, 
+              **kwargs):
     atoms = read(input_file) * (nx, ny, nz)
     cell = atoms.cell
-    group = [0 if (atom.position[0] < thickness or
-                   atom.position[1] < thickness or
-                   atom.position[2] < thickness)
-             else (1 if (atom.position[0] >= cell[0, 0] - thickness or
-                         atom.position[1] >= cell[1, 1] - thickness or
-                         atom.position[2] >= cell[2, 2] - thickness)
+    group = [0 if (atom.position[0] < thickness or atom.position[1] < thickness or atom.position[2] < thickness)
+             else (1 if (atom.position[0] >= cell[0, 0] - thickness or atom.position[1] >= cell[1, 1] - thickness or atom.position[2] >= cell[2, 2] - thickness)
                    else 2)
              for atom in atoms]
     atoms.info['group'] = group
-    if run_in is None:
-        run_in = [
-            'potential nep.txt',
-            'velocity 300',
-            'time_step 1',
-            'ensemble npt_scr 300 300 100 0 100 1000',
-            'dump_thermo 1000',
-            'dump_restart 50000',
-            'dump_exyz 1000 1 1',
-            'run 50000'
-        ]
-    
-    run_gpumd(atoms, dirname, run_in)
+    run_gpumd(atoms, dirname, **kwargs)

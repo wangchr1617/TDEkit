@@ -1,5 +1,5 @@
 #PBS -N gpumd
-#PBS -l nodes=gpu01:ppn=24
+#PBS -l nodes=gpu03:ppn=24
 #PBS -l walltime=144:00:00
 #PBS -q gpu
 #PBS -S /bin/bash
@@ -29,5 +29,5 @@ export CPLUS_INCLUDE_PATH=/opt/gcc/gcc-9.3.0/include:$CPLUS_INCLUDE_PATH
 export CUDA_VISIBLE_DEVICES=1
 export PATH=/home/changruiwang-ICME/Software/GPUMD-4.0/src:${PATH}
 
-python test_tde.py >> output
+python cascade.py >> output
 
