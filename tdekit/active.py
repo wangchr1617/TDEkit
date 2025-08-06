@@ -1,8 +1,131 @@
+import math
 import matplotlib.pyplot as plt
 import numpy as np
 import os
 from .core import read_xyz, dump_xyz
+from calorine.nep import get_descriptors
+from scipy.spatial.distance import cdist
 from time import time
+
+class FarthestPointSample:
+    def __init__(self, min_distance=0.1, min_select=1, max_select=None, metric='euclidean', metric_para={}):
+        self.min_distance = min_distance
+        self.min_select = min_select
+        self.max_select = max_select
+        self.metric = metric
+        self.metric_para = metric_para
+
+    def select(self, points, selected_points=[]):
+        max_select = self.max_select or len(points)
+        to_add = []
+        if len(points) == 0:
+            return to_add
+        if len(selected_points) == 0:
+            to_add.append(0)
+            selected_points.append(points[0])
+        else:
+            for point in selected_points:
+                try:
+                    index = points.index(point)
+                    to_add.append(index)
+                except ValueError:
+                    continue
+        distances = np.min(cdist(points, selected_points, metric=self.metric, **self.metric_para), axis=1)
+        while np.max(distances) > self.min_distance or len(to_add) < self.min_select:
+            i = np.argmax(distances)
+            to_add.append(i)
+            if len(to_add) >= max_select:
+                break
+            distances = np.minimum(distances, cdist([points[i]], points, metric=self.metric)[0])
+        return to_add
+    
+class DescriptorAnalyzer:
+    def __init__(self, model_filename, method='pca'):
+        self.descriptors = [] 
+        self.structure_indices_per_atom = []
+        self.frames = [] 
+        self.nframes = 0
+        self.natoms = []
+        self.labels = []
+        self.method = method 
+        self.model_filename = model_filename
+    
+    def add_xyz_file(self, xyz_path, label):
+        frames = read_xyz(xyz_path)
+        natoms = 0
+        descriptors = []
+        structure_indices_per_atom = []
+        for i, atoms in enumerate(frames):
+            descriptors.append(get_descriptors(atoms, model_filename=self.model_filename))
+            structure_indices_per_atom.extend([i + self.nframes] * len(atoms))
+            natoms += len(atoms)
+        self.descriptors.extend(descriptors)
+        self.frames.extend(frames)
+        self.nframes += len(frames)
+        print(f"Number of frames in {xyz_path}: {len(frames)}!")
+        self.natoms.append(natoms)
+        self.labels.append(label)
+        self.structure_indices_per_atom.extend(structure_indices_per_atom)
+        
+    def perform_decomposition(self):
+        all_descriptors = np.concatenate(self.descriptors, axis=0)
+        if self.method == 'pca':
+            from sklearn.decomposition import PCA
+            pca = PCA(n_components=2)
+            return pca.fit_transform(all_descriptors)
+        elif self.method == 'tsne':
+            from sklearn.manifold import TSNE
+            tsne = TSNE(n_components=2, perplexity=10, learning_rate='auto', init='pca', random_state=0, method="barnes_hut")
+            return tsne.fit_transform(all_descriptors)
+        elif self.method == 'umap':
+            import umap.umap_ as umap
+            umap_model = umap.UMAP(n_components=2)
+            return umap_model.fit_transform(all_descriptors)
+        
+    def _plot(self, ax, points, selected_points=None, **kwargs):
+        start = 0
+        for label, num in zip(self.labels, self.natoms):
+            end = start + num
+            ax.scatter(points[start:end, 0], points[start:end, 1], label=label, **kwargs)
+            start = end
+        if selected_points is not None:
+            ax.scatter(selected_points[:, 0], selected_points[:, 1], label='selected', **kwargs)
+
+    def perform_latent_analysis(self, ax, min_distance=0.1, min_select=1, max_select=None, level='structure', if_split=False, **kwargs):
+        if level == 'structure':
+            descriptors = np.array([np.mean(d, axis=0) for d in self.descriptors])
+            structure = np.arange(len(descriptors))  
+        elif level == 'atomic':
+            descriptors = np.concatenate(self.descriptors) 
+            structure = np.array(self.structure_indices_per_atom)
+        if min_select < 1:
+            min_select = math.floor(len(descriptors) * min_select)
+        sampler = FarthestPointSample(min_distance, min_select, max_select)
+        selected_indices = sampler.select(descriptors, [])        
+        if level == 'structure':
+            selected_set = set(selected_indices)
+        elif level == 'atomic': 
+            selected_set = {self.structure_indices_per_atom[i] for i in selected_indices}
+        unselected_set = set(range(len(self.frames))) - selected_set
+        indices_list = []
+        for value in selected_set:
+            indices = [index for index, elem in enumerate(self.structure_indices_per_atom) if elem == value]
+            indices_list.extend(indices)
+        points = self.perform_decomposition()
+        if if_split:
+            self._plot(ax, points, points[indices_list], **kwargs)
+        else:
+            self._plot(ax, points, **kwargs)
+        return selected_set, unselected_set
+
+    def split_xyz(self, filename, selected_set):
+        if os.path.exists(filename):
+            os.remove(filename)
+        selected_frames = [self.frames[i] for i in selected_set]
+        print(f"Number of selected frames: {len(selected_frames)}!")
+        with open(filename, 'a') as f_sel:
+            for atoms in selected_frames:
+                dump_xyz(f_sel, atoms)
 
 class ForceAnalyzer:
     def __init__(self, calculators: list, frame_paths: list, frame_labels: list, 

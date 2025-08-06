@@ -3,7 +3,7 @@ from tdekit import ForceAnalyzer
 import matplotlib.pyplot as plt
 import numpy as np
 
-prepath = '../potentials/'
+prepath = './potentials/'
 calculators = [
     CPUNEP(f'{prepath}0.txt'), 
     CPUNEP(f'{prepath}1.txt'),
@@ -11,7 +11,7 @@ calculators = [
     CPUNEP(f'{prepath}3.txt'),
 ]
 frame_paths = [
-    '../xyzs/test.xyz',
+    './xyzs/test.xyz',
 ]
 frame_labels = [
     'test',
