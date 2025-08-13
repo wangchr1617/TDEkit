@@ -1,4 +1,4 @@
-from calorine.calculators import CPUNEP, GPUNEP
+from calorine.calculators import CPUNEP
 from tdekit import ForceAnalyzer
 import matplotlib.pyplot as plt
 import numpy as np

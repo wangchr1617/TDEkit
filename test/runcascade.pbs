@@ -1,5 +1,5 @@
-#PBS -N gpumd
-#PBS -l nodes=gpu03:ppn=24
+#PBS -N test
+#PBS -l nodes=1:ppn=32
 #PBS -l walltime=144:00:00
 #PBS -q gpu
 #PBS -S /bin/bash

@@ -14,7 +14,7 @@ ts = TDESearch(
     nz=9, 
     thickness=10
 )
-prepath = Path('/home/changruiwang-ICME/Irradiation/train/GT917').resolve()
+prepath = Path('/home/changruiwang-ICME/Irradiation/train/GT').resolve()
 run_in_relax = [
     f'potential {prepath}/0/nep.txt',
     'velocity 300',
@@ -43,7 +43,7 @@ relax_restart = Path("./relax/restart.xyz").resolve()
 if not relax_restart.exists(): 
     relax_restart = ts.run_relax_simulation(
         input_file=Path("./model.xyz").resolve(), 
-        run_in = run_in_relax
+        run_in=run_in_relax
     )
 tde_list = []
 direction_table = generate_direction_table(4)
@@ -57,9 +57,11 @@ for d in direction_table:
     tde = ts.find_tde(input_file=relax_restart, 
                       index=None, 
                       symbol="Te", 
-                      scaled_position=(0.5,0.5,0.5))
+                      scaled_position=(0.5,0.5,0.5),
+                      run_in=run_in_cascade)
     tde_list.append(tde)
+    with open("tde_data.csv", 'a') as f:
+        f.write(f"{','.join(map(str, d))},{tde:.4e}\n")
 tde_array = np.array(tde_list)
-np.savetxt('tde.csv', tde_array, delimiter=',')
 print(np.mean(tde_array), flush=True) 
 

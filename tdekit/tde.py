@@ -75,7 +75,6 @@ class TDESearch:
 
     def clean_directory(self, directory):
         if directory.exists():
-            print(f"Cleaning directory: {directory}", flush=True)
             shutil.rmtree(directory)
 
     def run_defects_analyzer(self, energy):
@@ -96,8 +95,9 @@ class TDESearch:
             last_line = f.readlines()[-1].strip()
             return int(last_line.split("\t")[-1])
             
-    def run_relax_simulation(self, **kwargs):
-        relax_dir = self.base_dir / RELAXDIR
+    def run_relax_simulation(self, relax_dir=None, **kwargs):
+        if relax_dir is None:
+            relax_dir = self.base_dir / RELAXDIR
         run_relax(dirname=relax_dir,
                   nx=self.nx,
                   ny=self.ny,
@@ -118,29 +118,28 @@ class TDESearch:
         self.run_defects_analyzer(energy)
         return self.read_frenkel_pairs()
 
-    def exponential_growth_search(self, input_file, **kwargs):
+    def exponential_growth_search(self, **kwargs):
         print("\nStarting exponential growth search...", flush=True)
         current_energy = self.init_energy
         high_energy = None
         while current_energy <= self.max_energy:
-            fp_count = self.run_cascade_simulation(current_energy, input_file, **kwargs)
+            fp_count = self.run_cascade_simulation(current_energy, **kwargs)
             print(f"Energy: {current_energy:.2f}eV -> Frenkel pairs: {fp_count}", flush=True) 
             if fp_count > 0:
                 high_energy = current_energy
-                print(f"First damage found at {high_energy:.2f}eV", flush=True)
                 break 
             current_energy *= 2 
         if high_energy is None:
-            raise RuntimeError(f"No damage found below {self.max_energy}eV") 
+            raise RuntimeError(f"Warning: Maximum energy {self.max_energy}eV reached!")
         return high_energy, current_energy / 2
 
-    def binary_search(self, low_energy, high_energy, input_file, **kwargs):
+    def binary_search(self, low_energy, high_energy, **kwargs):
         print("\nStarting binary search...", flush=True)
         iteration = 0
         max_iterations = 100
         while abs(high_energy - low_energy) > self.precision and iteration < max_iterations:
             mid_energy = (low_energy + high_energy) / 2
-            fp_count = self.run_cascade_simulation(mid_energy, input_file, **kwargs)
+            fp_count = self.run_cascade_simulation(mid_energy, **kwargs)
             print(f"Energy: {mid_energy:.2f}eV -> Frenkel pairs: {fp_count}", flush=True)
             if fp_count > 0:
                 high_energy = mid_energy
@@ -148,16 +147,14 @@ class TDESearch:
                 low_energy = mid_energy
             iteration += 1
         if iteration >= max_iterations:
-            print(f"Warning: Maximum iterations ({max_iterations}) reached", flush=True)
-            print(f"Final values: Low={low_energy:.3f}eV, High={high_energy:.3f}eV", flush=True)
+            print(f"Warning: Maximum iterations ({max_iterations}) reached!", flush=True)
+            print(f"Final values: Low={low_energy:.3f}eV, High={high_energy:.3f}eV.", flush=True)
         return high_energy
 
-    def find_tde(self, input_file, **kwargs):
-        if input_file is None:
-            print("Please run relax simulation first!", flush=True)
-        damage_energy, no_damage_energy = self.exponential_growth_search(input_file, **kwargs)
-        tde = self.binary_search(no_damage_energy, damage_energy, input_file, **kwargs)
+    def find_tde(self, **kwargs):
+        damage_energy, no_damage_energy = self.exponential_growth_search(**kwargs)
+        tde = self.binary_search(no_damage_energy, damage_energy, **kwargs)
         self.clean_directory(self.work_dir / CASCADEDIR)
-        print(f"\nSearch completed! TDE: {tde:.3f}eV", flush=True)
+        print(f"\nSearch completed! TDE along the <{self.direction}> direction: {tde:.3f}eV.", flush=True)
         return tde
     

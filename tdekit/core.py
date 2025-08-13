@@ -263,10 +263,12 @@ def run_gpumd(atoms,
     os.chdir(original_directory)
     
 def run_cascade(dirname, 
-                input_file, 
+                input_file=None, 
                 energy=1, 
                 direction=np.array([0, 0, 1]),
                 **kwargs):
+    if input_file is None:
+        print("Warning: restart.xyz file must be specified!")
     atoms = read_restart(input_file)
     set_pka(atoms, energy, direction, **kwargs)
     run_gpumd(atoms, dirname, **kwargs)
