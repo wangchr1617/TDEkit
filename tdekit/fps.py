@@ -2,7 +2,6 @@ import logging
 import matplotlib.pyplot as plt
 import numpy as np
 import os
-import umap.umap_ as umap
 from .core import read_xyz, dump_xyz
 from calorine.nep import get_descriptors
 from matplotlib.animation import FuncAnimation
@@ -10,315 +9,428 @@ from matplotlib.cm import ScalarMappable
 from matplotlib.colors import Normalize
 from scipy.spatial import distance, KDTree
 from sklearn.decomposition import IncrementalPCA, PCA
-from sklearn.manifold import TSNE
 from time import time
+from typing import List, Set, Union
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 class FarthestPointSample:
-    def __init__(self, min_distance=0.1, min_select=1, max_select=None,
-                 metric='euclidean', metric_para={}, use_kdtree=True):
-        """
-        min_distance=0.1：点间最小距离阈值
-        min_select=1：最少采样点数
-        max_select=None：最大采样点数（默认无限制）
-        metric='euclidean'：距离度量标准
-        metric_para={}：距离计算参数
-        use_kdtree=True：是否使用 KDTree 加速计算
-        """
+    def __init__(self, min_distance: float = 0.1, min_select: int = 1,
+                 max_select: int = None, metric: str = 'euclidean',
+                 metric_para: dict = None):
         self.min_distance = min_distance
         self.min_select = min_select
         self.max_select = max_select
         self.metric = metric
-        self.metric_para = metric_para
-        self.use_kdtree = use_kdtree
+        self.metric_para = metric_para or {}
 
-    def select(self, points, selected_indices=None):
-        """
-        points: 输入的点云，一个二维数组（点集）。
-        selected_indices: 可选，已经选中的点的索引列表。如果提供，则在这些点的基础上继续选择；否则从零开始。
-        """
+    def select(self, points: np.ndarray, selected_indices: List[int] = None) -> List[int]:
         points = np.asarray(points)
-        n = len(points)
-        logging.info(f"Starting sampling on {n} points (dims={points.shape[1]})")
-        logging.info(f"Params: min_dist={self.min_distance}, min_select={self.min_select}, max_select={self.max_select}")
-        logging.info(f"Metric: {self.metric} ({'KDTree' if self.use_kdtree and n > 1000 else 'cdist'})")
+        n = points.shape[0]
+        dims = points.shape[1]
+
+        logger.info(f"Starting FPS on {n} points (dims={dims})")
+        logger.info(f"Params: min_dist={self.min_distance}, min_select={self.min_select}, max_select={self.max_select}")
+
         max_select = min(self.max_select or n, n)
         min_select = min(self.min_select, max_select)
-        logging.info(f"Final select range: {min_select} to {max_select} points")
-        selected = np.zeros(n, dtype=bool) # 布尔数组标记已选点
-        min_dists = np.full(n, np.inf) # 保存每个点距已选点的最小距离
-        new_indices = [] # 存储采样点索引
-        if not selected_indices:
+        logger.info(f"Select range: {min_select} to {max_select} points")
+
+        selected = np.zeros(n, dtype=bool)
+        min_dists = np.full(n, np.inf)
+        selected_idx_list = []
+
+        if selected_indices:
+            logger.info(f"Processing {len(selected_indices)} pre-selected points")
+            pre_points = points[selected_indices]
+            dist_matrix = distance.cdist(points, pre_points,
+                                         metric=self.metric, **self.metric_para)
+            min_dists = np.min(dist_matrix, axis=1)
+            selected[selected_indices] = True
+            selected_idx_list.extend(selected_indices)
+            logger.info(f"Pre-selected processed. Max distance: {np.max(min_dists):.4f}")
+        else:
             start_idx = np.random.randint(n)
             selected[start_idx] = True
-            new_indices.append(start_idx)
-            logging.info(f"Random initial point selected: index={start_idx}")
-            if self.use_kdtree and n > 1000:
-                logging.info("Building KDTree for large point cloud")
-                self.kdtree = KDTree(points)
-                min_dists, _ = self.kdtree.query(points[selected], k=1, workers=-1)
-                min_dists = min_dists.ravel()
-                logging.debug(f"Initial distances computed via KDTree")
-            else:
-                min_dists = distance.cdist(points, [points[start_idx]], metric=self.metric, **self.metric_para)[:, 0]
-                logging.debug(f"Initial distances computed via direct cdist")
-        else:
-            logging.info(f"Processing {len(selected_indices)} pre-selected points")
-            if self.use_kdtree and n > 1000:
-                logging.info("Building KDTree for large point cloud")
-                self.kdtree = KDTree(points)
-            for idx in selected_indices:
-                selected[idx] = True
-                new_indices.append(idx)
-                if hasattr(self, 'kdtree'):
-                    dists, _ = self.kdtree.query([points[idx]], k=1)
-                    new_dists = dists.ravel()
-                else:
-                    new_dists = distance.cdist(points, [points[idx]], metric=self.metric, **self.metric_para)[:, 0]
-                min_dists = np.minimum(min_dists, new_dists)
-            logging.info(f"Pre-selected points processed. Current min distance: {np.max(min_dists):.4f}")
-        logging.info("Entering main sampling loop...")
+            selected_idx_list.append(start_idx)
+            min_dists = distance.cdist(points, [points[start_idx]],
+                                       metric=self.metric, **self.metric_para)[:, 0]
+            logger.info(f"Random start point: index={start_idx}")
+
+        logger.info("Starting main sampling loop...")
         log_interval = max(1, max_select // 10)
         iteration = 0
-        while ((min_select and len(new_indices) < min_select) or
-               (np.max(min_dists) > self.min_distance)) and len(new_indices) < max_select:
+
+        while ((len(selected_idx_list) < min_select) or
+               (np.max(min_dists) > self.min_distance)) and (len(selected_idx_list) < max_select):
+
             candidate_idx = np.argmax(min_dists)
-            candidate_point = points[candidate_idx]
             selected[candidate_idx] = True
-            new_indices.append(candidate_idx)
+            selected_idx_list.append(candidate_idx)
+
             if iteration % log_interval == 0 or iteration < 5:
                 max_dist = np.max(min_dists)
-                coverage = len(new_indices) / max_select * 100
-                logging.info(
-                    f"Iter {iteration}: Selected {len(new_indices)}/{max_select} points "
-                    f"(coverage={coverage:.1f}%), Max distance={max_dist:.4f}, "
-                    f"Candidate index={candidate_idx}"
+                coverage = len(selected_idx_list) / max_select * 100
+                logger.info(
+                    f"Iter {iteration}: Selected {len(selected_idx_list)}/{max_select} points "
+                    f"({coverage:.1f}%), Max dist={max_dist:.4f}, Candidate={candidate_idx}"
                 )
-            if self.use_kdtree and hasattr(self, 'kdtree') and n > 1000:
-                new_dists, _ = self.kdtree.query([candidate_point], k=1)
-                new_dists = new_dists.flatten()
-            else:
-                new_dists = distance.cdist(points, [candidate_point], metric=self.metric, **self.metric_para)[:, 0]
+
+            new_dists = distance.cdist(points, [points[candidate_idx]],
+                                       metric=self.metric, **self.metric_para)[:, 0]
             min_dists = np.minimum(min_dists, new_dists)
             min_dists[selected] = 0
             iteration += 1
+
         max_dist = np.max(min_dists)
-        logging.info(
-            f"Sampling complete after {iteration} iterations. "
-            f"Selected {len(new_indices)} points. "
-            f"Final max distance={max_dist:.4f}, "
-            f"Min distance threshold={self.min_distance}"
+        logger.info(
+            f"FPS completed in {iteration} iterations. "
+            f"Selected {len(selected_idx_list)} points. "
+            f"Final max distance={max_dist:.4f} (threshold={self.min_distance})"
         )
-        return new_indices
+        return selected_idx_list
 
 class DescriptorAnalyzer:
-    def __init__(self, model_filename, method='pca',
-                 batch_size=1000, store_frames=True):
+    def __init__(self, model_filename: str, method: str = 'pca',
+                 batch_size: int = 1000, store_frames: bool = True):
         self.model_filename = model_filename
         self.method = method.lower()
         self.batch_size = batch_size
         self.store_frames = store_frames
+
         self.labels = []
         self.natoms_per_frame = []
         self.frames_per_file = []
         self.frames = []
-        self.latent_cache = {}
-        self.latent_time = 0
+
         self.descriptors = []
         self.flat_descriptors = None
         self.structure_indices = None
+
+        self.latent_cache = {}
+        self.latent_time = 0
+
         self.progress_counter = 0
         self.total_frames = 0
 
-    def add_xyz_file(self, xyz_path, label):
+    def add_xyz_file(self, xyz_path: str, label: str):
         start_time = time()
         frames = read_xyz(xyz_path)
         n_frames = len(frames)
         self.total_frames += n_frames
+
         logger.info(f"Processing {n_frames} frames from {os.path.basename(xyz_path)}")
-        logger.debug(f"XYZ file path: {xyz_path}")
+        logger.debug(f"XYZ path: {xyz_path}")
+
         if self.store_frames:
             self.frames.extend(frames)
             logger.debug(f"Storing {n_frames} frames in memory")
+
         descriptors = []
-        logger.info(f"Serial descriptor computation ({n_frames} frames)")
+        logger.info(f"Computing descriptors ({n_frames} frames)")
         log_interval = max(1, n_frames // 10)
+
         for i, atoms in enumerate(frames):
             desc = get_descriptors(atoms, self.model_filename)
             descriptors.append(desc)
             self.progress_counter += 1
-            if (i+1) % log_interval == 0 or (i+1) == n_frames:
-                local_progress = (i+1) / n_frames * 100
+
+            if (i + 1) % log_interval == 0 or (i + 1) == n_frames:
+                local_progress = (i + 1) / n_frames * 100
                 global_progress = self.progress_counter / self.total_frames * 100
                 logger.info(
-                    f"Processed: {i+1}/{n_frames} frames (local: {local_progress:.1f}%, "
+                    f"Processed: {i + 1}/{n_frames} frames (local: {local_progress:.1f}%, "
                     f"global: {global_progress:.1f}%)"
                 )
+
         self.descriptors.extend(descriptors)
         self.labels.append(label)
-        self.natoms_per_frame.extend([len(atoms) for atoms in frames])
+
+        file_natoms = [len(atoms) for atoms in frames]
+        self.natoms_per_frame.extend(file_natoms)
         self.frames_per_file.append(n_frames)
+
         self.latent_cache.clear()
         self.flat_descriptors = None
+
         duration = time() - start_time
-        atom_count = sum(self.natoms_per_frame[-n_frames:])
+        atom_count = sum(file_natoms)
         fps = n_frames / duration if duration > 0 else float('inf')
         logger.info(
-            f"Processed {n_frames} frames ({atom_count} atoms) from {os.path.basename(xyz_path)} in {duration:.1f}s "
-            f"({fps:.1f} fps)"
+            f"Completed {n_frames} frames ({atom_count} atoms) in {duration:.1f}s ({fps:.1f} fps)"
         )
-        logger.debug(f"Cleared latent space cache")
 
-    def _get_flat_descriptors(self):
+    def _get_flat_descriptors(self) -> np.ndarray:
         if self.flat_descriptors is None:
             start_time = time()
             self.flat_descriptors = np.concatenate(self.descriptors)
-            self.structure_indices = np.repeat(np.arange(len(self.descriptors)), [len(d) for d in self.descriptors])
-            logger.info(f"Generated flattened descriptors in {time() - start_time:.1f}s")
+
+            self.structure_indices = np.concatenate([
+                np.full(len(d), i) for i, d in enumerate(self.descriptors)
+            ])
+
+            logger.info(f"Flattened descriptors created in {time() - start_time:.1f}s")
         return self.flat_descriptors
 
-    def _get_structure_descriptors(self):
+    def _get_structure_descriptors(self) -> np.ndarray:
         start_time = time()
-        return np.array([np.mean(d, axis=0) for d in self.descriptors])
+        struct_desc = np.array([np.mean(d, axis=0) for d in self.descriptors])
+        logger.info(f"Structure descriptors computed in {time() - start_time:.1f}s")
+        return struct_desc
 
-    def perform_decomposition(self, force_recompute=False):
-        cache_key = self.method
+    def perform_decomposition(self, data: np.ndarray = None, force_recompute: bool = False) -> np.ndarray:
+        cache_key = f"{self.method}_{data.shape if data is not None else 'atomic'}"
+
         if not force_recompute and cache_key in self.latent_cache:
-            logger.debug(f"Using cached {self.method.upper()} results")
+            logger.debug(f"Using cached {cache_key} results")
             return self.latent_cache[cache_key]
-        start_time = time()
-        n_points = sum(len(d) for d in self.descriptors)
-        logger.info(f"Starting {self.method.upper()} dimensionality reduction on {n_points} points")
-        if n_points > 10000 and self.method == 'pca':
-            logger.info(f"Using IncrementalPCA for large dataset ({n_points} points)...")
-            ipca = IncrementalPCA(n_components=2, batch_size=self.batch_size)
-            for i in range(0, len(self.descriptors), self.batch_size):
-                batch = np.concatenate(self.descriptors[i:i + self.batch_size])
-                ipca.partial_fit(batch)
-                logger.debug(f"Processed batch {i} to {min(i + self.batch_size, len(self.descriptors))}")
-            latent = []
-            for i in range(0, len(self.descriptors), self.batch_size):
-                batch = np.concatenate(self.descriptors[i:i + self.batch_size])
-                latent.append(ipca.transform(batch))
-                logger.debug(f"Transformed batch {i} to {min(i + self.batch_size, len(self.descriptors))}")
-            points = np.concatenate(latent)
-        else:
+
+        if data is None:
             data = self._get_flat_descriptors()
+            data_type = "atomic-level"
+        else:
+            data_type = f"{data.shape[1]}D structure-level"
+
+        start_time = time()
+        n_points = len(data)
+        logger.info(f"Starting {self.method.upper()} on {n_points} {data_type} points")
+
+        if n_points > 10000 and self.method == 'pca':
+            logger.info(f"Using IncrementalPCA for large dataset")
+            ipca = IncrementalPCA(n_components=2, batch_size=self.batch_size)
+
+            for i in range(0, n_points, self.batch_size):
+                batch = data[i:i + self.batch_size]
+                ipca.partial_fit(batch)
+
+            points = []
+            for i in range(0, n_points, self.batch_size):
+                batch = data[i:i + self.batch_size]
+                points.append(ipca.transform(batch))
+
+            points = np.concatenate(points)
+        else:
             if self.method == 'pca':
-                logger.info("Using standard PCA...")
+                logger.info("Using standard PCA")
                 pca = PCA(n_components=2)
                 points = pca.fit_transform(data)
+
             elif self.method == 'tsne':
-                logger.info("Using t-SNE...")
-                tsne = TSNE(n_components=2, perplexity=10, learning_rate='auto', init='pca', random_state=0, method="barnes_hut")
+                logger.info("Using t-SNE")
+                from sklearn.manifold import TSNE
+                tsne = TSNE(n_components=2, perplexity=min(30, n_points // 3),
+                            n_iter=1000, random_state=42)
                 points = tsne.fit_transform(data)
+
             elif self.method == 'umap':
-                logger.info("Using UMAP...")
-                umap_model = umap.UMAP(n_components=2)
-                points = umap_model.fit_transform(data)
+                logger.info("Using UMAP")
+                import umap
+                reducer = umap.UMAP(n_components=2, n_neighbors=min(15, n_points - 1))
+                points = reducer.fit_transform(data)
+
         self.latent_cache[cache_key] = points
         self.latent_time = time() - start_time
         logger.info(f"{self.method.upper()} completed in {self.latent_time:.1f}s")
         return points
 
-    def _plot(self, ax, points, selected_atoms=None, **kwargs):
-        start = 0
+    def _plot(self, ax, points: np.ndarray, selected_mask: np.ndarray = None,
+              level: str = 'atomic', **kwargs):
         color_cycle = plt.rcParams['axes.prop_cycle'].by_key()['color']
-        for i, (label, n_frames) in enumerate(zip(self.labels, self.frames_per_file)):
-            file_atom_count = n_frames * self.natoms_per_frame[0]
-            end = start + file_atom_count
-            file_points = points[start:end]
-            ax.scatter(file_points[:, 0], file_points[:, 1],
-                       color=color_cycle[i % len(color_cycle)],
-                       alpha=0.6, label=label, **kwargs)
-            if selected_atoms is not None:
-                if len(selected_atoms) >= end:
-                    sel_mask = selected_atoms[start:end]
-                    ax.scatter(file_points[sel_mask, 0], file_points[sel_mask, 1],
-                               color='red', marker='o', s=50, edgecolors='black')
-                else:
-                    logger.warning(f"selected_atoms length mismatch ({len(selected_atoms)} vs total points {len(points)})")
-            start = end
+        unique_labels = sorted(set(self.labels))
+        label_colors = {label: color_cycle[i % len(color_cycle)]
+                        for i, label in enumerate(unique_labels)}
 
-    def perform_latent_analysis(self, ax=None, min_distance=0.1, min_select=1,
-                                max_select=None, level='structure', **kwargs):
-        """
-        Optimized latent space analysis
-        level: 'structure' for structure-level, 'atomic' for atomic-level
-        """
+        if level == 'atomic':
+            start_idx = 0
+            for file_idx, (label, n_frames) in enumerate(zip(self.labels, self.frames_per_file)):
+                file_natoms = sum(self.natoms_per_frame[start_idx:start_idx + n_frames])
+                end_idx = start_idx + file_natoms
+
+                file_points = points[start_idx:end_idx]
+                color = label_colors[label]
+
+                ax.scatter(file_points[:, 0], file_points[:, 1],
+                           alpha=0.5, label=label, color=color, **kwargs)
+
+                if selected_mask is not None:
+                    file_selected = selected_mask[start_idx:end_idx]
+                    if np.any(file_selected):
+                        ax.scatter(file_points[file_selected, 0], file_points[file_selected, 1],
+                                   color='red', edgecolor='black', alpha=0.75, zorder=5)
+
+                start_idx = end_idx
+
+        else:
+            start_idx = 0
+            for file_idx, (label, n_frames) in enumerate(zip(self.labels, self.frames_per_file)):
+                end_idx = start_idx + n_frames
+                file_points = points[start_idx:end_idx]
+                color = label_colors[label]
+
+                ax.scatter(file_points[:, 0], file_points[:, 1],
+                           alpha=0.5, label=label, color=color, **kwargs)
+
+                if selected_mask is not None:
+                    file_selected = selected_mask[start_idx:end_idx]
+                    if np.any(file_selected):
+                        ax.scatter(file_points[file_selected, 0], file_points[file_selected, 1],
+                                   color='red', edgecolor='black', alpha=0.75, zorder=5)
+
+                start_idx = end_idx
+
+        handles, labels = ax.get_legend_handles_labels()
+        unique_labels = sorted(set(labels), key=labels.index)
+        unique_handles = [handles[labels.index(label)] for label in unique_labels]
+
+        if unique_handles:
+            ax.legend(unique_handles, unique_labels)
+
+    def _divide_conquer_sampling(self, descriptors: np.ndarray, min_select: int,
+                                 max_select: int, min_distance: float) -> np.ndarray:
+        n = len(descriptors)
+        chunk_size = 50000
+        chunks = []
+
+        for i in range(0, n, chunk_size):
+            chunks.append({
+                'start': i,
+                'end': min(i + chunk_size, n),
+                'data': descriptors[i:min(i + chunk_size, n)]
+            })
+
+        logger.info(f"Divide-and-conquer: {len(chunks)} chunks for {n} points")
+        sampled_indices = []
+
+        for chunk in chunks:
+            chunk_data = chunk['data']
+            start_idx = chunk['start']
+
+            chunk_select = min(1000, len(chunk_data), max(1, min_select // 3))
+
+            logger.debug(f"Processing chunk [{start_idx}-{start_idx + len(chunk_data)}] "
+                         f"with {len(chunk_data)} points, sampling {chunk_select} points")
+
+            sampler = FarthestPointSample(min_distance=min_distance,
+                                          min_select=chunk_select,
+                                          max_select=chunk_select)
+            local_indices = sampler.select(chunk_data)
+            global_indices = [start_idx + idx for idx in local_indices]
+            sampled_indices.extend(global_indices)
+
+        final_data = descriptors[sampled_indices]
+        min_select_final = min(min_select, len(final_data))
+        max_select_final = min(max_select or len(final_data), len(final_data))
+
+        logger.info(f"Final sampling on {len(sampled_indices)} sampled points")
+
+        sampler = FarthestPointSample(min_distance=min_distance,
+                                      min_select=min_select_final,
+                                      max_select=max_select_final)
+        final_local_indices = sampler.select(final_data)
+        global_indices = [sampled_indices[i] for i in final_local_indices]
+
+        return np.array(global_indices)
+
+    def perform_latent_analysis(self, ax=None, min_distance: float = 0.1,
+                                min_select: Union[int, float] = 1, max_select: int = None,
+                                level: str = 'structure', strategy=None,
+                                **kwargs) -> Set[int]:
         start_time = time()
-        logger.info(f"Starting latent space analysis (level: {level})")
         total_atoms = sum(len(d) for d in self.descriptors)
-        if level == 'atomic' and total_atoms > 100000:
-            logger.warning(
-                f"Atomic-level analysis disabled for large dataset ({total_atoms} atoms), "
-                f"switching to structure-level"
-            )
-            level = 'structure'
+        logger.info(f"Starting latent analysis (level={level}, atoms={total_atoms})")
+
         if level == 'structure':
-            logger.info("Using structure-level descriptors...")
+            logger.info("Using structure-level analysis")
             descriptors = self._get_structure_descriptors()
-            indices = np.arange(len(descriptors))
-            points = self.perform_decomposition()
-            structure_points = np.zeros((len(self.descriptors), 2))
-            start = 0
-            for i, desc in enumerate(self.descriptors):
-                end = start + len(desc)
-                structure_points[i] = np.mean(points[start:end], axis=0)
-                start = end
-            points = structure_points
+            points = self.perform_decomposition(descriptors, force_recompute=False)
+            n_points = len(descriptors)
+            logger.info(f"Structure-level: {n_points} points")
         else:
-            logger.info("Using atomic-level descriptors...")
+            logger.info("Using atomic-level analysis")
             descriptors = self._get_flat_descriptors()
-            points = self.perform_decomposition()
-            indices = np.arange(len(descriptors))
-        if min_select < 1:
-            min_select = max(1, int(len(descriptors) * min_select))
-        max_select = max(min_select, min(max_select or len(descriptors), len(descriptors)))
-        logger.info(f"Sampling parameters: min_select={min_select}, max_select={max_select}, min_distance={min_distance}")
-        if len(descriptors) > 100000:
-            logger.info("Dataset too large (>100,000 points), using random sampling instead of FPS")
-            selected_idx = np.random.choice(len(descriptors), size=min_select, replace=False)
+            points = self.perform_decomposition(descriptors, force_recompute=False)
+            n_points = len(descriptors)
+            logger.info(f"Atomic-level: {n_points} points")
+
+        if isinstance(min_select, float):
+            min_select = max(1, int(n_points * min_select))
+        min_select = min(min_select, n_points)
+
+        max_select = max_select or n_points
+        max_select = min(max_select, n_points)
+
+        logger.info(f"Sampling params: min={min_select}, max={max_select}, min_dist={min_distance}")
+
+        if strategy is not None:
+            logger.warning(f"Large dataset ({n_points} points), using {strategy} strategy")
+
+            if strategy == 'divide':
+                selected_idx = self._divide_conquer_sampling(descriptors, min_select, max_select, min_distance)
+            else:
+                selected_idx = np.random.choice(n_points, size=min_select, replace=False)
         else:
-            logger.info("Using Farthest Point Sampling...")
-            sampler = FarthestPointSample(min_distance, min_select, max_select)
+            logger.info("Using standard FPS sampling")
+            sampler = FarthestPointSample(
+                min_distance=min_distance,
+                min_select=min_select,
+                max_select=max_select)
             selected_idx = sampler.select(descriptors)
-        all_structures = set(range(len(self.descriptors)))
+
         if level == 'structure':
             selected_structures = set(selected_idx)
         else:
-            selected_structures = set(np.unique(self.structure_indices[selected_idx]))
+            selected_structures = set(self.structure_indices[selected_idx])
+
+        all_structures = set(range(len(self.descriptors)))
         unselected_structures = all_structures - selected_structures
+
         logger.info(f"Selected {len(selected_structures)} structures")
+
         if ax:
-            selection_mask = None
             if level == 'atomic':
-                selection_mask = np.zeros(len(points), dtype=bool)
-                selection_mask[selected_idx] = True
-            self._plot(ax, points, selected_atoms=selection_mask, **kwargs)
+                selected_mask = np.zeros(n_points, dtype=bool)
+                selected_mask[selected_idx] = True
+            else:
+                selected_mask = np.zeros(len(points), dtype=bool)
+                selected_mask[list(selected_structures)] = True
+
+            self._plot(ax, points, selected_mask=selected_mask,
+                       level=level, **kwargs)
+
+            method_name = self.method.upper()
+            ax.set_title(f"{method_name} Projection ({level} level)\n"
+                         f"Selected: {len(selected_structures)} structures")
+
+        duration = time() - start_time
+        logger.info(f"Latent analysis completed in {duration:.1f}s")
         return selected_structures, unselected_structures
 
-    def split_xyz(self, filename, selected_set, overwrite=True):
-        logger.info(f"Exporting structures to {filename}")
-        if not hasattr(self, 'frames') or not self.frames:
-            raise AttributeError("Original frames not stored, initialize with store_frames=True")
+    def split_xyz(self, filename: str, selected_set: Set[int], overwrite: bool = True) -> str:
+        if not self.store_frames or not self.frames:
+            raise AttributeError("Frames not stored (initialize with store_frames=True)")
+
         if overwrite and os.path.exists(filename):
-            logger.warning(f"File {filename} exists and will be overwritten")
+            logger.warning(f"Overwriting existing file: {filename}")
             os.remove(filename)
-        if isinstance(selected_set, np.ndarray):
-            selected_set = set(selected_set.flatten())
-        elif not isinstance(selected_set, (set, list, tuple)):
-            selected_set = {int(selected_set)}
-        logger.info(f"Exporting {len(selected_set)} selected frames...")
-        selected_frames = [self.frames[i] for i in selected_set]
-        with open(filename, 'a', encoding='utf-8') as f_sel:
-            for i, atoms in enumerate(selected_frames):
-                dump_xyz(f_sel, atoms)
-                if i % 100 == 0:
-                    logger.debug(f"Exported {i + 1}/{len(selected_frames)} frames")
-        logger.info(f"Successfully saved {len(selected_frames)} frames to {filename}")
+
+        selected_list = sorted(selected_set)
+        n_selected = len(selected_list)
+
+        logger.info(f"Exporting {n_selected} structures to {filename}")
+
+        with open(filename, 'w', encoding='utf-8') as f:
+            for i, idx in enumerate(selected_list):
+                if idx < 0 or idx >= len(self.frames):
+                    logger.warning(f"Invalid frame index {idx}, skipping")
+                    continue
+
+                dump_xyz(f, self.frames[idx])
+
+                if i > 0 and i % 100 == 0:
+                    logger.info(f"Exported {i}/{n_selected} structures")
+
+        logger.info(f"Successfully exported {n_selected} structures to {filename}")
         return filename
 
 def main():
