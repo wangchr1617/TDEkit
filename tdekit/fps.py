@@ -8,7 +8,6 @@ from matplotlib.animation import FuncAnimation
 from matplotlib.cm import ScalarMappable
 from matplotlib.colors import Normalize
 from scipy.spatial import distance, KDTree
-from sklearn.decomposition import IncrementalPCA, PCA
 from time import time
 from typing import List, Set, Union
 
@@ -196,37 +195,41 @@ class DescriptorAnalyzer:
         n_points = len(data)
         logger.info(f"Starting {self.method.upper()} on {n_points} {data_type} points")
 
-        if n_points > 10000 and self.method == 'pca':
-            logger.info(f"Using IncrementalPCA for large dataset")
-            ipca = IncrementalPCA(n_components=2, batch_size=self.batch_size)
-
+        if n_points > 1000000 and self.method == 'pca':
+            logger.info(f"Using IncrementalPCA (IPCA) for large dataset")
+            from sklearn.decomposition import IncrementalPCA
+            ipca = IncrementalPCA(n_components=2, 
+                                  batch_size=self.batch_size)
             for i in range(0, n_points, self.batch_size):
                 batch = data[i:i + self.batch_size]
                 ipca.partial_fit(batch)
-
             points = []
             for i in range(0, n_points, self.batch_size):
                 batch = data[i:i + self.batch_size]
                 points.append(ipca.transform(batch))
-
-            points = np.concatenate(points)
+            points = np.concatenate(points)            
         else:
             if self.method == 'pca':
                 logger.info("Using standard PCA")
-                pca = PCA(n_components=2)
+                from sklearn.decomposition import PCA
+                pca = PCA(n_components=2,
+                          random_state=42)
                 points = pca.fit_transform(data)
-
             elif self.method == 'tsne':
                 logger.info("Using t-SNE")
                 from sklearn.manifold import TSNE
-                tsne = TSNE(n_components=2, perplexity=min(30, n_points // 3),
-                            n_iter=1000, random_state=42)
+                tsne = TSNE(n_components=2, 
+                            method='barnes_hut', 
+                            perplexity=min(30, n_points // 3),
+                            learning_rate='auto', 
+                            random_state=42)
                 points = tsne.fit_transform(data)
-
             elif self.method == 'umap':
                 logger.info("Using UMAP")
                 import umap
-                reducer = umap.UMAP(n_components=2, n_neighbors=min(15, n_points - 1))
+                reducer = umap.UMAP(n_components=2, 
+                                    n_neighbors=min(15, n_points - 1),
+                                    random_state=42)
                 points = reducer.fit_transform(data)
 
         self.latent_cache[cache_key] = points

@@ -29,5 +29,4 @@ export CPLUS_INCLUDE_PATH=/opt/gcc/gcc-9.3.0/include:$CPLUS_INCLUDE_PATH
 export CUDA_VISIBLE_DEVICES=1
 export PATH=/home/changruiwang-ICME/Software/GPUMD-4.0/src:${PATH}
 
-python cascade.py >> output
-
+python tdesearch.py >> output

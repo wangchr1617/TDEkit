@@ -2,6 +2,7 @@ from ase import Atoms
 from ase.io import read
 import numpy as np
 import os
+import random
 import shutil
 
 def write_run(parameters):
@@ -211,35 +212,71 @@ def set_pka(atoms,
             direction, 
             index=None, 
             symbol=None, 
-            scaled_position=(0.5,0.5,0.5),
+            random_select=False, 
+            scaled_position=(0.5, 0.5, 0.5),
+            center_pka=False,
             **kwargs):
     if atoms.info['velocities'] is None:
         raise ValueError('The velocities of atoms are not set.')
-
-    if index is None:
-        cell = atoms.get_cell()
-        target_positions = sum(c*r for c, r in zip(cell, scaled_position))
-        if symbol is None:
-            index = np.argmin(np.sum((atoms.positions - target_positions)**2, axis=1))
+    
+    all_indices = list(range(len(atoms)))
+    
+    if symbol is not None:
+        element_indices = [i for i, atom in enumerate(atoms) if atom.symbol == symbol]
+        if not element_indices:
+            raise ValueError(f"No atoms found with symbol {symbol}")
+        candidate_indices = element_indices
+    else:
+        candidate_indices = all_indices
+    
+    if index is not None:
+        if index < 0 or index >= len(atoms):
+            raise ValueError(f"Index {index} is out of range [0, {len(atoms)-1}]")
+        if symbol is not None and atoms[index].symbol != symbol:
+            raise ValueError(f"Atom at index {index} has symbol {atoms[index].symbol}, "
+                           f"but expected {symbol}")        
+        selected_index = index
+        print(f"Using specified index {index} (symbol: {atoms[index].symbol})")    
+    else:
+        if random_select:
+            selected_index = random.choice(candidate_indices)
+            print(f"Randomly selected index {selected_index} (symbol: {atoms[selected_index].symbol})")
         else:
-            element_indices = [i for i, atom in enumerate(atoms) if atom.symbol == symbol]
-            element_positions = atoms.positions[element_indices]
-            index = element_indices[np.argmin(np.sum((element_positions - target_positions)**2, axis=1))]
+            cell = atoms.get_cell()
+            target_positions = sum(c*r for c, r in zip(cell, scaled_position))
+            distances = np.sum((atoms.positions[candidate_indices] - target_positions)**2, axis=1)
+            min_idx = np.argmin(distances)
+            selected_index = candidate_indices[min_idx]            
+            min_distance = np.sqrt(distances[min_idx])
+            print(f"Selected closest atom at index {selected_index} "
+                  f"(symbol: {atoms[selected_index].symbol}, distance: {min_distance:.3f} Å)")
 
-    mass = atoms[index].mass
-    vx = pow(2 * energy / mass , 0.5) * direction[0] / pow(np.sum(direction ** 2), 0.5) / 10.18
-    vy = pow(2 * energy / mass , 0.5) * direction[1] / pow(np.sum(direction ** 2), 0.5) / 10.18
-    vz = pow(2 * energy / mass , 0.5) * direction[2] / pow(np.sum(direction ** 2), 0.5) / 10.18
-    delta_momentum = (np.array(atoms.info['velocities'][index]) - np.array([vx, vy, vz])) * mass / (len(atoms) - 1)
+    if center_pka:
+        cell = atoms.get_cell()
+        inv_cell = np.linalg.inv(cell.T)
+        scaled_pos = np.dot(atoms.positions[selected_index], inv_cell)
+        translation_vector = np.array([0.5, 0.5, 0.5]) - scaled_pos
+        cart_translation = np.dot(translation_vector, cell)
+        atoms.positions += cart_translation
+        atoms.wrap()
+        
+        print(f"System translated to center PKA atom at index {selected_index}")
+        print(f"Translation vector (Cartesian): {cart_translation}")
+
+    mass = atoms[selected_index].mass
+    vx = pow(2 * energy / mass, 0.5) * direction[0] / pow(np.sum(direction ** 2), 0.5) / 10.18
+    vy = pow(2 * energy / mass, 0.5) * direction[1] / pow(np.sum(direction ** 2), 0.5) / 10.18
+    vz = pow(2 * energy / mass, 0.5) * direction[2] / pow(np.sum(direction ** 2), 0.5) / 10.18
+    delta_momentum = (np.array(atoms.info['velocities'][selected_index]) - np.array([vx, vy, vz])) * mass / (len(atoms) - 1)
 
     atoms_masses = np.array(atoms.get_masses())
     atoms.info['velocities'] += delta_momentum / atoms_masses[:, np.newaxis]
-    atoms.info['velocities'][index] = [vx, vy, vz]
-    print(f'Index:    {index}', flush=True)
-    print(f'Symbol:   {atoms[index].symbol}', flush=True)
-    print(f'Position: {atoms[index].position[0]:.6f}, {atoms[index].position[1]:.6f}, {atoms[index].position[2]:.6f}', flush=True)
-    print(f'Mass:     {atoms[index].mass:.2f}', flush=True)
-    print(f'Velocity: {atoms.info["velocities"][index][0]:.6f}, {atoms.info["velocities"][index][1]:.6f}, {atoms.info["velocities"][index][2]:.6f}', flush=True)
+    atoms.info['velocities'][selected_index] = [vx, vy, vz]
+    print(f'Index:    {selected_index}', flush=True)
+    print(f'Symbol:   {atoms[selected_index].symbol}', flush=True)
+    print(f'Position: {atoms[selected_index].position[0]:.6f}, {atoms[selected_index].position[1]:.6f}, {atoms[selected_index].position[2]:.6f}', flush=True)
+    print(f'Mass:     {atoms[selected_index].mass:.2f}', flush=True)
+    print(f'Velocity: {atoms.info["velocities"][selected_index][0]:.6f}, {atoms.info["velocities"][selected_index][1]:.6f}, {atoms.info["velocities"][selected_index][2]:.6f}', flush=True)
     print('--------------------', flush=True)
 
 def run_gpumd(atoms, 
@@ -281,6 +318,8 @@ def run_relax(dirname,
               thickness=1, 
               **kwargs):
     atoms = read(input_file) * (nx, ny, nz)
+    sorted_indices = sorted(range(len(atoms)), key=lambda i: atoms[i].symbol)
+    atoms = atoms[sorted_indices]
     cell = atoms.cell
     group = [0 if (atom.position[0] < thickness or atom.position[1] < thickness or atom.position[2] < thickness)
              else (1 if (atom.position[0] >= cell[0, 0] - thickness or atom.position[1] >= cell[1, 1] - thickness or atom.position[2] >= cell[2, 2] - thickness)
