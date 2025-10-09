@@ -127,13 +127,20 @@ class DescriptorAnalyzer:
             logger.debug(f"Storing {n_frames} frames in memory")
 
         descriptors = []
+        processed_natoms = [] 
         logger.info(f"Computing descriptors ({n_frames} frames)")
         log_interval = max(1, n_frames // 10)
 
         for i, atoms in enumerate(frames):
-            desc = get_descriptors(atoms, self.model_filename)
-            descriptors.append(desc)
-            self.progress_counter += 1
+            try:
+                desc = get_descriptors(atoms, self.model_filename)
+                descriptors.append(desc)
+                processed_natoms.append(len(atoms)) 
+            except Exception as e:
+                logger.warning(f"Skipping frame {i} due to error: {str(e)}")
+                continue 
+            finally:
+                self.progress_counter += 1 
 
             if (i + 1) % log_interval == 0 or (i + 1) == n_frames:
                 local_progress = (i + 1) / n_frames * 100
@@ -146,19 +153,21 @@ class DescriptorAnalyzer:
         self.descriptors.extend(descriptors)
         self.labels.append(label)
 
-        file_natoms = [len(atoms) for atoms in frames]
-        self.natoms_per_frame.extend(file_natoms)
-        self.frames_per_file.append(n_frames)
-
+        self.natoms_per_frame.extend(processed_natoms)
+        self.frames_per_file.append(len(descriptors))
+        
         self.latent_cache.clear()
         self.flat_descriptors = None
 
         duration = time() - start_time
-        atom_count = sum(file_natoms)
-        fps = n_frames / duration if duration > 0 else float('inf')
+        atom_count = sum(processed_natoms)
+        processed_frames = len(descriptors)
+        fps = processed_frames / duration if duration > 0 else float('inf')
         logger.info(
-            f"Completed {n_frames} frames ({atom_count} atoms) in {duration:.1f}s ({fps:.1f} fps)"
+            f"Completed {processed_frames}/{n_frames} frames ({atom_count} atoms) in {duration:.1f}s ({fps:.1f} fps)"
         )
+        if processed_frames < n_frames:
+            logger.warning(f"Skipped {n_frames - processed_frames} frames due to errors")
 
     def _get_flat_descriptors(self) -> np.ndarray:
         if self.flat_descriptors is None:

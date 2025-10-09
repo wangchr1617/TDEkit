@@ -122,7 +122,7 @@ RELAXDIR = "relax/"
 CASCADEDIR = "cascade/"
 class TDESearch:
     def __init__(self, base_dir="./", init_energy=1, max_energy=1000, 
-                 precision=0.01, direction=np.array([0, 0, 1])):
+                 precision=1, direction=np.array([0, 0, 1])):
         self.base_dir = Path(base_dir).resolve()
         self.work_dir = self.base_dir / CASCADEDIR
         self.init_energy = init_energy
@@ -190,7 +190,7 @@ class TDESearch:
         restart_path = relax_dir / "restart.xyz"
         return restart_path
 
-    def run_cascade_simulation(self, energy, work_dir=None, clean=True, **kwargs):
+    def run_cascade_simulation(self, energy, work_dir=None, clean=True, defects_analysis=True, **kwargs):
         if work_dir is None:
             work_dir = self.work_dir
         cascade_dir = self.get_unique_dir_id()
@@ -202,10 +202,17 @@ class TDESearch:
             direction=self.direction,
             **kwargs
         )
-        self.run_defects_analyzer(energy, work_dir, cascade_dir)
+        
+        if defects_analysis:
+            self.run_defects_analyzer(energy, work_dir, cascade_dir)
+            frenkel_pairs = self.read_frenkel_pairs(work_dir)
+        else:
+            frenkel_pairs = -1
+            
         if clean:
             self.clean_directory(work_dir / cascade_dir)
-        return self.read_frenkel_pairs(work_dir)
+            
+        return frenkel_pairs, cascade_dir
 
     def exponential_growth_search(self, **kwargs):
         print("\n=== Starting exponential growth search ===")
@@ -214,7 +221,7 @@ class TDESearch:
         
         while current_energy <= self.max_energy:
             print(f"Testing energy: {current_energy:.2f}eV")
-            fp_count = self.run_cascade_simulation(current_energy, **kwargs)
+            fp_count, _ = self.run_cascade_simulation(current_energy, **kwargs)
             print(f"Energy: {current_energy:.2f}eV -> Frenkel pairs: {fp_count}", flush=True) 
             if fp_count > 0:
                 high_energy = current_energy
@@ -232,40 +239,42 @@ class TDESearch:
         print(f"Sampling parameters: {num_samples} samples per point, threshold probability: {threshold_prob}")
         
         iteration = 0
-        max_iterations = 30
+        max_iterations = 50
         
-        def get_fp_probability(energy):
+        def get_fp_probability(energy, n_samples):
             print(f"\n--- Sampling at {energy:.3f}eV ---")
             fp_count = 0
-            for i in range(num_samples):
-                count = self.run_cascade_simulation(energy, **kwargs)
+            for i in range(n_samples):
+                count, _ = self.run_cascade_simulation(energy, **kwargs)
                 if count > 0:
                     fp_count += 1
                     print(f"Sample {i+1}: Damage detected ({count} FP)")
                 else:
                     print(f"Sample {i+1}: No damage detected")
-            probability = fp_count / num_samples
-            print(f"Energy {energy:.3f}eV: FP probability = {probability:.2f} ({fp_count}/{num_samples})")
+            probability = fp_count / n_samples
+            print(f"Energy {energy:.3f}eV: FP probability = {probability:.2f} ({fp_count}/{n_samples})")
             return probability
         
         print("Verifying initial bounds...")
-        low_prob = get_fp_probability(low_energy)
-        high_prob = get_fp_probability(high_energy)
+        low_prob = get_fp_probability(low_energy, num_samples)
+        high_prob = get_fp_probability(high_energy, num_samples)
         
         while low_prob >= threshold_prob and iteration < max_iterations:
             print(f"Lower bound {low_energy:.3f}eV has probability {low_prob:.2f} >= threshold")
             high_energy = low_energy
+            high_prob = low_prob
             low_energy = low_energy / 2
             print(f"Adjusting bounds: [{low_energy:.3f}, {high_energy:.3f}] eV")
-            low_prob = get_fp_probability(low_energy)
+            low_prob = get_fp_probability(low_energy, num_samples)
             iteration += 1
             
         while high_prob < threshold_prob and iteration < max_iterations:
             print(f"Upper bound {high_energy:.3f}eV has probability {high_prob:.2f} < threshold")
             low_energy = high_energy
+            low_prob = high_prob
             high_energy = high_energy * 2
             print(f"Adjusting bounds: [{low_energy:.3f}, {high_energy:.3f}] eV")
-            high_prob = get_fp_probability(high_energy)
+            high_prob = get_fp_probability(high_energy, num_samples)
             iteration += 1
         
         if iteration >= max_iterations:
@@ -275,6 +284,13 @@ class TDESearch:
             return final_estimate
         
         while abs(high_energy - low_energy) > self.precision and iteration < max_iterations:
+            if abs(high_energy - low_energy) > 40:
+                n_samples = 1
+            elif abs(high_energy - low_energy) > 20:
+                n_samples = 5
+            else:
+                n_samples = num_samples
+                
             iteration += 1
             print(f"\n--- Binary Search Iteration {iteration} ---")
             print(f"Current bounds: [{low_energy:.3f}, {high_energy:.3f}] eV")
@@ -282,7 +298,7 @@ class TDESearch:
             
             mid_energy = (low_energy + high_energy) / 2
             print(f"Testing midpoint: {mid_energy:.3f}eV")
-            prob = get_fp_probability(mid_energy)
+            prob = get_fp_probability(mid_energy, n_samples)
             
             if prob >= threshold_prob:
                 high_energy = mid_energy
@@ -301,14 +317,14 @@ class TDESearch:
         print(f"\nBinary search completed after {iteration} iterations")
         print(f"Final TDE estimate: {final_estimate:.3f}eV")
         
-        return final_estimate
+        return final_estimate, low_energy, low_prob, high_energy, high_prob
 
     def find_tde(self, num_samples=10, verification_samples=10, threshold_prob=0.5, **kwargs):
         print("\n" + "="*60)
         print("STARTING TDE SEARCH")
         print("="*60)
         damage_energy, no_damage_energy = self.exponential_growth_search(**kwargs)
-        tde_estimate = self.binary_search(
+        tde_estimate, low_energy, low_prob, high_energy, high_prob = self.binary_search(
             no_damage_energy, 
             damage_energy, 
             num_samples=num_samples,
@@ -320,15 +336,20 @@ class TDESearch:
         
         fp_detected = 0
         for i in range(verification_samples):           
-            count = self.run_cascade_simulation(tde_estimate, **kwargs)            
+            count, _ = self.run_cascade_simulation(tde_estimate, **kwargs)            
             if count > 0:
                 fp_detected += 1
                 print(f"Sample {i+1}: Damage detected ({count} FP)")
             else:
                 print(f"Sample {i+1}: No damage detected")        
         verified_probability = fp_detected / verification_samples
+        
+        if verified_probability < threshold_prob:
+            tde_estimate = high_energy
+            verified_probability = high_prob
+        
         print(f"\nVerification results at {tde_estimate:.3f}eV:")
-        print(f"Damage probability: {verified_probability:.2f} ({fp_detected}/{verification_samples})")
+        print(f"Damage probability: {verified_probability:.2f}")
         
         print("\n" + "="*60)
         print("TDE SEARCH COMPLETE")
