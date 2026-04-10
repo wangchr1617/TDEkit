@@ -203,11 +203,11 @@ def dump_xyz(f: Any, atoms: Atoms) -> None:
     
     for i, atom in enumerate(atoms):
         line = f"{atom.symbol:2} {atom.position[0]:>15.8e} {atom.position[1]:>15.8e} {atom.position[2]:>15.8e} {atom.mass:>15.8e}"
-        if valid_keys['velocities'] and velocities:
+        if valid_keys['velocities'] and velocities is not None:
             line += f" {velocities[i][0]:>15.8e} {velocities[i][1]:>15.8e} {velocities[i][2]:>15.8e}"
-        if valid_keys['forces'] and forces:
+        if valid_keys['forces'] and forces is not None:
             line += f" {forces[i][0]:>15.8e} {forces[i][1]:>15.8e} {forces[i][2]:>15.8e}"
-        if valid_keys['group'] and groups:
+        if valid_keys['group'] and groups is not None:
             line += f" {groups[i]}"
         out_lines.append(line)
         
@@ -226,7 +226,7 @@ def read_restart(filename: PathLike) -> Atoms:
             pbc = [val == "T" for val in pbc_str.split()]
             
         lattice_str = comment.split("Lattice=\"")[1].split("\"")[0].strip()
-        lattice = [list(map(float, row.split())) for row in lattice_str.split(" ")]
+        lattice = [float(x) for x in lattice_str.split()]
         cell = [
             [lattice[0], lattice[1], lattice[2]],
             [lattice[3], lattice[4], lattice[5]],

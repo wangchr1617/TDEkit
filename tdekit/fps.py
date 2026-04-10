@@ -3,8 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
 from time import time
-from typing import List, Set, Union, Optional, Dict, Any
-
+from typing import Tuple, Set, List, Dict, Optional, Union, Any
 from matplotlib.animation import FuncAnimation
 from matplotlib.cm import ScalarMappable
 from matplotlib.colors import Normalize
