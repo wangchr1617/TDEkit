@@ -17,10 +17,12 @@ force analysis. Add `.[umap]` to use UMAP. MD engines and potential files are
 provided by the user.
 
 - [Single-recoil API and trajectory acceptance](docs/single-recoil.md)
+- [Frame-resolved lattice occupancy](docs/occupancy.md)
 - [Recoil protocols and OVITO setup](docs/recoil-workflow.md)
 - [CP2K label acceptance and NEP dataset export](docs/cp2k-nep-dataset.md)
 - [Flexible NEP–ZBL fitting and comparison](docs/nep-zbl.md)
 - [Engine validation results](docs/validation.md)
+- [Upstream interoperability](docs/upstream-interoperability.md)
 - [Related projects and development scope](docs/development.md)
 - `tdekit/` contains the library, `tests/` the regression tests, and
   `examples/` small engine validation cases.
