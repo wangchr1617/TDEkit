@@ -4,7 +4,7 @@ import subprocess
 import numpy as np
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple, Union, Any
-from ase import Atoms
+from ase import Atoms, units
 from ase.io import read
 
 # 定义通用的路径类型提示
@@ -261,6 +261,7 @@ def set_pka(atoms: Atoms,
             random_select: bool = False, 
             scaled_position: Tuple[float, float, float] = (0.5, 0.5, 0.5),
             center_pka: bool = False,
+            mode: str = "replace",
             **kwargs) -> None:
     """
     为给定的 Atoms 对象设置初级碰撞原子 (PKA) 的速度。
@@ -276,15 +277,27 @@ def set_pka(atoms: Atoms,
         scaled_position: PKA 目标选择位置（分数坐标），当 random_select 为 False 时生效。
         center_pka: 是否将系统平移，使被选中的 PKA 位于盒子中心。
     """
-    if atoms.info.get('velocities') is None:
-        raise ValueError('原子的 velocities 属性未设置，无法分配 PKA 动能。')
-    
+    if mode not in {"replace", "impulse"}:
+        raise ValueError("mode must be 'replace' or 'impulse'")
+    if not np.isfinite(energy) or energy < 0:
+        raise ValueError("energy must be finite and nonnegative")
+    current_vels = np.asarray(atoms.info.get("velocities"), dtype=float)
+    if current_vels.shape != (len(atoms), 3) or not np.isfinite(current_vels).all():
+        raise ValueError("Expected finite velocities in atoms.info['velocities'] (Å/fs)")
+    masses = atoms.get_masses()
+    if not len(atoms) or not np.isfinite(masses).all() or np.any(masses <= 0):
+        raise ValueError("PKA requires atoms with positive finite masses")
+    if mode == "replace" and len(atoms) < 2:
+        raise ValueError("Momentum-compensated replacement requires at least two atoms")
+
     direction = np.asarray(direction, dtype=float)
+    if direction.shape != (3,):
+        raise ValueError("direction must have three components")
     dir_norm = np.linalg.norm(direction)
-    if dir_norm == 0:
-        raise ValueError("PKA 方向向量不能为零。")
+    if not np.isfinite(dir_norm) or dir_norm == 0:
+        raise ValueError("direction must have a finite, nonzero norm")
     direction = direction / dir_norm
-    
+
     all_indices = list(range(len(atoms)))
     
     if candidate_indices is not None:
@@ -330,20 +343,20 @@ def set_pka(atoms: Atoms,
         atoms.wrap()
         print(f"[PKA 平移] 系统已平移，使原子 {selected_index} 位于中心。位移向量: {cart_translation}")
 
-    # 分配速度，确保动量守恒
-    mass = atoms[selected_index].mass
-    # 动能公式转化: v = sqrt(2E/m) / 10.18 (10.18 用于转换 eV, amu 之间的单位)
-    v_mag = np.sqrt(2 * energy / mass) / 10.18
-    v_pka = v_mag * direction
-    
-    current_vels = np.array(atoms.info['velocities'])
-    delta_momentum = (current_vels[selected_index] - v_pka) * mass / (len(atoms) - 1)
+    mass = masses[selected_index]
+    velocities = current_vels.copy()
+    if mode == "impulse":
+        delta_v = units.fs * np.sqrt(2 * energy / mass) * direction
+        velocities[selected_index] += delta_v
+    else:
+        # Preserve the historical replacement conversion and momentum protocol.
+        replacement = np.sqrt(2 * energy / mass) / 10.18 * direction
+        delta_momentum = (current_vels[selected_index] - replacement) * mass
+        velocities += delta_momentum / ((len(atoms) - 1) * masses[:, None])
+        velocities[selected_index] = replacement
+    atoms.info["velocities"] = velocities
+    v_pka = velocities[selected_index]
 
-    atoms_masses = np.array(atoms.get_masses())
-    # 将动量变化平均分配给其他原子
-    atoms.info['velocities'] = current_vels + delta_momentum / atoms_masses[:, np.newaxis]
-    atoms.info['velocities'][selected_index] = v_pka.tolist()
-    
     print("-" * 30)
     print(f"PKA 设置完毕 | 能量: {energy} eV")
     print(f"Index:    {selected_index}")
@@ -353,43 +366,41 @@ def set_pka(atoms: Atoms,
     print(f"Velocity: {v_pka[0]:.6f}, {v_pka[1]:.6f}, {v_pka[2]:.6f}")
     print("-" * 30, flush=True)
 
-def run_gpumd(atoms: Atoms, 
-              dirname: PathLike, 
-              run_in: List[str], 
-              nep_path: PathLike = "./nep.txt",
+def resolve_executable(executable: PathLike) -> str:
+    """Resolve an executable before changing the subprocess working directory."""
+    resolved = shutil.which(str(executable))
+    if resolved is None:
+        raise FileNotFoundError(f"Executable not found: {executable}")
+    return str(Path(resolved).resolve())
+
+
+def run_gpumd(atoms: Atoms,
+              dirname: PathLike,
+              run_in: List[str],
+              nep_path: Optional[PathLike] = None,
+              *,
+              executable: PathLike = "gpumd",
               **kwargs) -> None:
-    """在指定目录建立计算环境并调用 GPUMD 进行模拟。"""
-    dir_path = Path(dirname)
-    try:
-        dir_path.mkdir(parents=True, exist_ok=False)
-    except FileExistsError:
-        raise FileExistsError(f"计算目录 {dir_path} 已存在。")
-        
-    nep_file = Path(nep_path)
-    if nep_file.exists():
-        shutil.copy(nep_file, dir_path / 'nep.txt')
-    else:
-        print(f"[警告] 势函数文件 {nep_file} 未找到，请确保 GPUMD 可访问势函数！")
-        
-    original_directory = Path.cwd()
-    os_chdir = getattr(Path, 'chdir', __import__('os').chdir)  # 兼容性处理
-    
-    try:
-        os_chdir(dir_path)
-        write_run(run_in)
-        with open('model.xyz', 'w', encoding='utf-8') as f:
-            dump_xyz(f, atoms)
-            
-        print(f"[GPUMD] 启动模拟: {dir_path}")
-        with open("gpumd.out", "w") as out_file:
-            subprocess.run(["gpumd"], stdout=out_file, stderr=subprocess.STDOUT, check=True)
-            
-    except subprocess.CalledProcessError as e:
-        print(f"[错误] GPUMD 运行异常中断，请检查 {dir_path}/gpumd.out")
-        raise
-    finally:
-        os_chdir(original_directory)
-    
+    """Write a GPUMD case and execute it in an isolated working directory."""
+    engine = resolve_executable(executable)
+    potential = Path(nep_path) if nep_path is not None else Path("nep.txt")
+    if (nep_path is not None or any(
+        line.split("#", 1)[0].split()[:2] == ["potential", "nep.txt"]
+        for line in run_in
+    )) and not potential.is_file():
+        raise FileNotFoundError(f"Potential file not found: {potential}")
+
+    directory = Path(dirname)
+    directory.mkdir(parents=True, exist_ok=False)
+    if potential.is_file():
+        shutil.copyfile(potential, directory / "nep.txt")
+
+    write_run(run_in, directory / "run.in")
+    with (directory / "model.xyz").open("w", encoding="utf-8") as model:
+        dump_xyz(model, atoms)
+    with (directory / "gpumd.out").open("w", encoding="utf-8") as log:
+        subprocess.run([engine], cwd=directory, stdout=log, stderr=subprocess.STDOUT, check=True)
+
 def run_cascade(dirname: PathLike, 
                 input_file: Optional[PathLike] = None, 
                 energy: float = 1.0, 

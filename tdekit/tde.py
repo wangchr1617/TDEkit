@@ -1,14 +1,16 @@
 import csv
 import hashlib
+import json
 import numpy as np
 import random
 import shutil
 import subprocess
+import sys
 import time
 from itertools import combinations_with_replacement, product
 from math import gcd
 from pathlib import Path
-from typing import List, Tuple, Union, Optional
+from typing import List, Tuple, Union, Optional, Sequence
 from .core import run_cascade, run_relax
 
 # 定义通用的路径类型
@@ -136,11 +138,16 @@ class TDESearch:
     RELAX_DIR = "relax"
     CASCADE_DIR = "cascade"
 
-    def __init__(self, base_dir: PathLike = "./", direction: Union[List[float], np.ndarray] = np.array([0, 0, 1])):
+    def __init__(self, base_dir: PathLike = "./",
+                 direction: Union[List[float], np.ndarray] = (0, 0, 1), *,
+                 ovito_command: Optional[Sequence[str]] = None):
         self.base_dir = Path(base_dir).resolve()
         self.work_dir = self.base_dir / self.CASCADE_DIR
         self.direction = np.asarray(direction, dtype=float)
         self.n_simulation = 0
+        if isinstance(ovito_command, (str, bytes)) or (ovito_command is not None and not ovito_command):
+            raise ValueError("ovito_command must be a nonempty sequence of command arguments")
+        self.ovito_command = tuple(ovito_command) if ovito_command is not None else (sys.executable,)
     
     def set_work_dir(self, work_dir: PathLike) -> None:
         self.work_dir = Path(work_dir).resolve()
@@ -162,24 +169,22 @@ class TDESearch:
         unique_hash = hashlib.md5(hash_input.encode()).hexdigest()[:8]
         return f"{dir_name}_{unique_hash}"
 
-    def run_defects_analyzer(self, energy: float, work_dir: Optional[Path] = None, cascade_dir: Optional[str] = None) -> None:
-        """调用 Apptainer 运行 ovito_python 分析缺陷。"""
+    def run_defects_analyzer(self, energy: float, work_dir: Optional[Path] = None,
+                             cascade_dir: Optional[str] = None, *,
+                             output_dir: Optional[Path] = None) -> None:
+        """Analyze a cascade with the configured Python interpreter."""
         wd = work_dir or self.work_dir
         cd = cascade_dir or self.CASCADE_DIR
-        script_path = Path(__file__).resolve().parent / "defects_analyzer.py"
-        
-        container_path = Path("/opt/software/ovito-3.12.3/bin/ovito_python.sif")
-        if not container_path.exists():
-            print(f"[警告] 未找到 Apptainer 镜像: {container_path}，这可能导致缺陷分析失败。")
-
+        script_path = Path(__file__).resolve().with_name("defects_analyzer.py")
         command = [
-            "apptainer", "exec", str(container_path),
-            "python", str(script_path),
+            *self.ovito_command, str(script_path),
             "--work_dir", str(wd),
             "--cascade_dir", str(wd / cd),
-            "--energy", str(energy)
+            "--energy", str(energy),
         ]
-        
+        if output_dir is not None:
+            command.extend(["--output_dir", str(output_dir)])
+
         try:
             subprocess.run(command, check=True, capture_output=True, text=True)
         except subprocess.CalledProcessError as e:
@@ -189,25 +194,17 @@ class TDESearch:
     def read_frenkel_pairs(self, work_dir: Optional[Path] = None) -> int:
         wd = work_dir or self.work_dir
         summary_file = wd / "final_defect_summary.txt"
-        
-        if not summary_file.exists():
-            print(f"[警告] 缺陷摘要文件不存在: {summary_file}")
-            return 0
-            
-        with summary_file.open('r', encoding='utf-8') as f:
-            lines = [line.strip() for line in f if line.strip()]
-            if not lines or len(lines) < 2:  # 只有表头或为空
-                print("[警告] 缺陷摘要文件为空或格式错误")
-                return 0
-                
-            last_line = lines[-1]
-            try:
-                fp_count = int(last_line.split("\t")[-1])
-                return fp_count
-            except (ValueError, IndexError):
-                print(f"[警告] 无法解析 Frenkel pair 数量: {last_line}")
-                return 0
-            
+        lines = summary_file.read_text(encoding="utf-8").strip().splitlines()
+        if len(lines) != 2 or lines[0] != "Timestep\tFrenkel_pairs":
+            raise ValueError(f"Invalid defect summary: {summary_file}")
+        try:
+            frame, count = map(int, lines[1].split("\t"))
+        except ValueError as error:
+            raise ValueError(f"Invalid defect summary: {summary_file}") from error
+        if frame < 0 or count < 0:
+            raise ValueError(f"Negative frame or defect count: {summary_file}")
+        return count
+
     def run_relax_simulation(self, relax_dir: Optional[PathLike] = None, **kwargs) -> Path:
         rd = Path(relax_dir) if relax_dir else self.base_dir / self.RELAX_DIR
         print("[状态] 开始运行晶格弛豫模拟...")
@@ -217,172 +214,213 @@ class TDESearch:
     def run_cascade_simulation(self, energy: float, work_dir: Optional[Path] = None, 
                                clean: bool = True, defects_analysis: bool = True, 
                                **kwargs) -> Tuple[int, str]:
-        wd = work_dir or self.work_dir
+        wd = Path(work_dir) if work_dir is not None else self.work_dir
         cascade_dir_name = self.get_unique_dir_id()
         cascade_path = wd / cascade_dir_name
-        
-        # print(f"[级联] 能量 {energy:.3f} eV, 目录: {cascade_dir_name}")
-
+        source = Path(kwargs["input_file"]).resolve() if kwargs.get("input_file") is not None else None
+        source_hash = hashlib.sha256(source.read_bytes()).hexdigest() if source is not None else None
         run_cascade(
-            dirname=cascade_path,
-            energy=energy,
-            direction=self.direction,
-            **kwargs
+            dirname=cascade_path, energy=energy, direction=self.direction, **kwargs
         )
-        
+
         frenkel_pairs = -1
         if defects_analysis:
-            self.run_defects_analyzer(energy, wd, cascade_dir_name)
-            frenkel_pairs = self.read_frenkel_pairs(wd)
-            
+            self.run_defects_analyzer(energy, wd, cascade_dir_name, output_dir=cascade_path)
+            frenkel_pairs = self.read_frenkel_pairs(cascade_path)
+        receipt = {
+            "case_id": cascade_dir_name,
+            "energy_ev": float(energy),
+            "direction_cartesian": self.direction.tolist(),
+            "mode": kwargs.get("mode", "replace"),
+            "input_file": str(source) if source is not None else None,
+            "input_sha256": source_hash,
+            "prepared_inputs_sha256": {
+                name: hashlib.sha256((cascade_path / name).read_bytes()).hexdigest()
+                for name in ("model.xyz", "run.in", "nep.txt")
+                if (cascade_path / name).is_file()
+            },
+            "frenkel_pairs": frenkel_pairs if defects_analysis else None,
+        }
+        with (wd / f"{cascade_dir_name}.json").open("x", encoding="utf-8") as stream:
+            json.dump(receipt, stream, indent=2, allow_nan=False)
+            stream.write("\n")
         if clean:
             self.clean_directory(cascade_path)
-            
         return frenkel_pairs, cascade_dir_name
 
-    def get_fp_probability(self, energy: float, n_samples: int, **kwargs) -> float:
-        """在特定能量下多次采样，计算产生 Frenkel pair 的概率。"""
-        print(f"\n[统计] 采样能量: {energy:.3f} eV | 样本总数: {n_samples}")
-        fp_count = 0
-        for i in range(n_samples):
-            count, _ = self.run_cascade_simulation(energy, **kwargs)
-            if count > 0:
-                fp_count += 1
-                # print(f"  样本 {i+1}/{n_samples}: 发现损伤 ({count} FP)")
-        
-        probability = fp_count / n_samples
-        print(f"[统计结果] {energy:.3f} eV -> 损伤概率 = {probability:.2f} ({fp_count}/{n_samples})")
+    @staticmethod
+    def _sample_set(inputs, n_samples):
+        if not isinstance(n_samples, (int, np.integer)) or n_samples <= 0:
+            raise ValueError("n_samples must be a positive integer")
+        if inputs is None:
+            return None, set()
+        if isinstance(inputs, (str, bytes, Path)):
+            raise ValueError("sample_inputs must be a sequence of restart paths")
+        paths = tuple(Path(path) for path in inputs)
+        if len(paths) != n_samples:
+            raise ValueError("sample_inputs must contain exactly n_samples restart files")
+        hashes = {hashlib.sha256(path.read_bytes()).digest() for path in paths}
+        if len(hashes) != n_samples:
+            raise ValueError("sample_inputs must contain distinct restart files")
+        return paths, hashes
+
+    def get_fp_probability(self, energy: float, n_samples: int, *,
+                           sample_inputs=None, **kwargs) -> float:
+        """Return the observed fraction of samples with a Frenkel pair."""
+        paths, _ = self._sample_set(sample_inputs, n_samples)
+        if not kwargs.get("defects_analysis", True):
+            raise ValueError("Frenkel-pair probability requires defect analysis")
+        if paths is not None and "input_file" in kwargs:
+            raise ValueError("Choose input_file or sample_inputs")
+        damage_count = 0
+        for index in range(n_samples):
+            case_options = kwargs if paths is None else {**kwargs, "input_file": paths[index]}
+            count, _ = self.run_cascade_simulation(energy, **case_options)
+            if count < 0:
+                raise ValueError("Frenkel-pair count is unavailable")
+            damage_count += count > 0
+        probability = damage_count / n_samples
+        print(f"{energy:.6g} eV: {damage_count}/{n_samples} runs formed a Frenkel pair", flush=True)
         return probability
 
-    def exponential_growth_search(self, init_energy: float = 2.0, max_energy: float = 1000.0, **kwargs) -> Tuple[float, float]:
-        """指数增长法粗略定位损伤发生能量区间。"""
-        print("\n=== 开始指数增长法区间搜索 ===")
-        current_energy = init_energy
-        
-        while current_energy <= max_energy:
-            print(f"-> 测试能量: {current_energy:.2f} eV")
-            fp_count, _ = self.run_cascade_simulation(current_energy, **kwargs)
-            
-            if fp_count > 0:
-                high_energy = current_energy
-                low_energy = current_energy / 2.0
-                print(f"[区间定位] 在 {high_energy:.2f} eV 处首次发现损伤。")
-                print(f"[区间定位] 损伤边界粗定为: [{low_energy:.2f}, {high_energy:.2f}] eV")
-                return low_energy, high_energy
-                
-            current_energy *= 2.0
-            
-        raise RuntimeError(f"在最高设定能量 {max_energy} eV 下仍未检测到损伤！")
+    @staticmethod
+    def _energy_interval(low, high):
+        if not np.isfinite([low, high]).all() or not 0 <= low <= high:
+            raise ValueError("Expected finite energies with 0 <= low <= high")
 
-    def binary_search(self, low_energy: float, high_energy: float, 
-                      precision: float = 1.0, num_samples: int = 10, 
-                      threshold_prob: float = 0.5, **kwargs) -> Tuple[float, float, float, float, float]:
-        """基于概率统计的二分查找算法精确定位 TDE。"""
-        print("\n=== 开始二分统计概率搜索 ===")
-        print(f"初始边界: [{low_energy:.3f}, {high_energy:.3f}] eV")
-        print(f"参数设定: 概率阈值 {threshold_prob}, 样本数 {num_samples}/点, 精度 < {precision} eV")
-        
-        iteration = 0
-        max_iterations = 50                
-        
-        print("\n[初始化] 验证初始边界概率...")
-        low_prob = self.get_fp_probability(low_energy, num_samples, **kwargs)
-        high_prob = self.get_fp_probability(high_energy, num_samples, **kwargs)
-        
-        # 边界自适应调整
-        while low_prob >= threshold_prob and iteration < max_iterations:
-            print(f"[边界修正] 下界 {low_energy:.3f} eV 概率 ({low_prob:.2f}) 过高。向下拓展。")
-            high_energy, high_prob = low_energy, low_prob
-            low_energy /= 2.0
-            low_prob = self.get_fp_probability(low_energy, num_samples, **kwargs)
-            iteration += 1
-            
-        while high_prob < threshold_prob and iteration < max_iterations:
-            print(f"[边界修正] 上界 {high_energy:.3f} eV 概率 ({high_prob:.2f}) 过低。向上拓展。")
-            low_energy, low_prob = high_energy, high_prob
-            high_energy *= 2.0
-            high_prob = self.get_fp_probability(high_energy, num_samples, **kwargs)
-            iteration += 1
-        
-        # 核心二分循环
-        while (high_energy - low_energy) > precision and iteration < max_iterations:
-            iteration += 1
-            mid_energy = (low_energy + high_energy) / 2.0
-            
-            print(f"\n--- 二分迭代 {iteration} ---")
-            print(f"当前区间: [{low_energy:.3f}, {high_energy:.3f}] eV (区间宽度: {high_energy - low_energy:.3f} eV)")
-            
-            prob = self.get_fp_probability(mid_energy, num_samples, **kwargs)
-            
-            if prob >= threshold_prob:
-                high_energy, high_prob = mid_energy, prob
-                print(f"-> 概率 {prob:.2f} >= 阈值，收紧上界至 {high_energy:.3f} eV")
+    @staticmethod
+    def _threshold(threshold_prob):
+        if not 0 < threshold_prob <= 1:
+            raise ValueError("threshold_prob must be in (0, 1]")
+
+    @staticmethod
+    def _growth_energies(start, limit):
+        energy = start
+        while energy < limit:
+            yield energy
+            energy = min(2 * energy, limit)
+        yield limit
+
+    def exponential_growth_search(self, init_energy: float = 2.0,
+                                  max_energy: float = 1000.0, **kwargs) -> Tuple[float, float]:
+        """Locate the first sampled energy with a positive defect count."""
+        self._energy_interval(init_energy, max_energy)
+        if init_energy == 0:
+            raise ValueError("init_energy must be positive for exponential growth")
+        previous = init_energy / 2
+        for energy in self._growth_energies(init_energy, max_energy):
+            count, _ = self.run_cascade_simulation(energy, **kwargs)
+            if count < 0:
+                raise ValueError("Frenkel-pair count is unavailable")
+            if count > 0:
+                return previous, energy
+            previous = energy
+        raise RuntimeError(f"No sampled damage through {max_energy:g} eV")
+
+    @staticmethod
+    def _bisect(low, low_prob, high, high_prob, precision, threshold, probability):
+        if not np.isfinite(precision) or precision <= 0:
+            raise ValueError("precision must be positive and finite")
+        if not low_prob < threshold <= high_prob:
+            raise RuntimeError("Observed probabilities do not bracket the threshold")
+        while high - low > precision:
+            midpoint = low + (high - low) / 2
+            if not low < midpoint < high:
+                raise RuntimeError("Requested precision is below floating-point resolution")
+            measured = probability(midpoint)
+            if measured >= threshold:
+                high, high_prob = midpoint, measured
             else:
-                low_energy, low_prob = mid_energy, prob
-                print(f"-> 概率 {prob:.2f} < 阈值，收紧下界至 {low_energy:.3f} eV")
-        
-        if iteration >= max_iterations:
-            print(f"\n[警告] 达到最大迭代次数 ({max_iterations})，搜索提前终止。")
-        
-        final_estimate = (low_energy + high_energy) / 2.0
-        print(f"\n[二分搜索完成] 迭代次数: {iteration}")
-        
-        return final_estimate, low_energy, low_prob, high_energy, high_prob
-        
-    def incremental_search(self, low_energy: float, high_energy: float, 
-                           step: float = 2.0, num_samples: int = 10, 
-                           threshold_prob: float = 0.5, **kwargs) -> Tuple[Optional[float], float]:
-        """线性增量搜索方法 (作为二分法的替代)。"""
-        print("\n=== 开始增量线性搜索 ===")
-        print(f"搜索区间: [{low_energy:.3f}, {high_energy:.3f}] eV, 步长: {step} eV")
-        
-        current_energy = low_energy        
-        iteration = 0
-        
-        while current_energy <= high_energy:
-            iteration += 1
-            prob = self.get_fp_probability(current_energy, num_samples, **kwargs)
-            
-            if prob >= threshold_prob:
-                print(f"\n[增量搜索完成] 在 {current_energy:.3f} eV 处跨越概率阈值 ({prob:.2f})")
-                return current_energy, prob
-                
-            current_energy += step
-        
-        print(f"\n[警告] 在 {high_energy:.3f} eV 之前未发现超过阈值概率的 TDE。")
-        return None, 0.0
+                low, low_prob = midpoint, measured
+        return low + (high - low) / 2, low, low_prob, high, high_prob
 
-    def find_tde(self, init_energy: float = 2.0, max_energy: float = 1000.0, 
-                 precision: float = 1.0, num_samples: int = 10, verification_samples: int = 10, 
-                 threshold_prob: float = 0.5, **kwargs) -> Tuple[float, float]:
-        """执行端到端的 TDE 搜索主控工作流。"""
-        print("\n" + "="*60)
-        print("启动 TDE 自动化搜索流程")
-        print("="*60)
-        
-        # 1. 指数增长找到粗边界
-        no_damage_energy, damage_energy = self.exponential_growth_search(init_energy, max_energy, **kwargs)
-        
-        # 2. 二分法统计确认精确值
-        tde_estimate, low_eng, low_prob, high_eng, high_prob = self.binary_search(
-            no_damage_energy, damage_energy, precision, 
-            num_samples=num_samples, threshold_prob=threshold_prob, **kwargs
+    def binary_search(self, low_energy: float, high_energy: float,
+                      precision: float = 1.0, num_samples: int = 10,
+                      threshold_prob: float = 0.5, *,
+                      max_energy: Optional[float] = None, **kwargs) -> Tuple[float, float, float, float, float]:
+        """Bisect a probability bracket with a finite expansion limit."""
+        self._energy_interval(low_energy, high_energy)
+        limit = max(high_energy, 1000.0) if max_energy is None else max_energy
+        self._energy_interval(high_energy, limit)
+        self._threshold(threshold_prob)
+        if high_energy == 0 or not np.isfinite(precision) or precision <= 0:
+            raise ValueError("high_energy and precision must be positive and finite")
+
+        def probability(energy):
+            return self.get_fp_probability(energy, num_samples, **kwargs)
+
+        low_prob = probability(low_energy)
+        if low_prob >= threshold_prob and low_energy > 0:
+            high_energy, high_prob = low_energy, low_prob
+            low_energy, low_prob = 0.0, probability(0.0)
+        else:
+            for energy in self._growth_energies(high_energy, limit):
+                high_prob = probability(energy)
+                if high_prob >= threshold_prob:
+                    high_energy = energy
+                    break
+                low_energy, low_prob = energy, high_prob
+            else:
+                raise RuntimeError(f"No observed threshold crossing through {limit:g} eV")
+        return self._bisect(low_energy, low_prob, high_energy, high_prob,
+                            precision, threshold_prob, probability)
+
+    def incremental_search(self, low_energy: float, high_energy: float,
+                           step: float = 2.0, num_samples: int = 10,
+                           threshold_prob: float = 0.5, **kwargs) -> Tuple[Optional[float], float]:
+        """Scan in increasing energy, including the exact upper limit."""
+        self._energy_interval(low_energy, high_energy)
+        self._threshold(threshold_prob)
+        if not np.isfinite(step) or step <= 0:
+            raise ValueError("step must be positive and finite")
+        energy = low_energy
+        while True:
+            probability = self.get_fp_probability(energy, num_samples, **kwargs)
+            if probability >= threshold_prob:
+                return energy, probability
+            if energy == high_energy:
+                return None, 0.0
+            next_energy = min(energy + step, high_energy)
+            if next_energy == energy:
+                raise RuntimeError("Requested step is below floating-point resolution")
+            energy = next_energy
+
+    def find_tde(self, init_energy: float = 2.0, max_energy: float = 1000.0,
+                 precision: float = 1.0, num_samples: int = 10, verification_samples: int = 10,
+                 threshold_prob: float = 0.5, *, sample_inputs=None,
+                 verification_inputs=None, **kwargs) -> Tuple[float, float]:
+        """Search for a probability crossing and verify the reported energy."""
+        self._energy_interval(init_energy, max_energy)
+        self._threshold(threshold_prob)
+        if init_energy == 0 or not np.isfinite(precision) or precision <= 0:
+            raise ValueError("init_energy and precision must be positive and finite")
+        search_paths, search_hashes = self._sample_set(sample_inputs, num_samples)
+        verify_paths, verify_hashes = self._sample_set(verification_inputs, verification_samples)
+        if (search_paths is None) != (verify_paths is None) or search_hashes & verify_hashes:
+            raise ValueError("Provide disjoint search and verification restart sets together")
+        if search_paths is not None and "input_file" in kwargs:
+            raise ValueError("Choose input_file or explicit restart sets")
+
+        def probability(energy):
+            return self.get_fp_probability(energy, num_samples, sample_inputs=search_paths, **kwargs)
+
+        low, low_prob = None, None
+        for high in self._growth_energies(init_energy, max_energy):
+            high_prob = probability(high)
+            if high_prob >= threshold_prob:
+                break
+            low, low_prob = high, high_prob
+        else:
+            raise RuntimeError(f"No observed threshold crossing through {max_energy:g} eV")
+        if low is None:
+            low, low_prob = 0.0, probability(0.0)
+        midpoint, _, _, high, _ = self._bisect(
+            low, low_prob, high, high_prob, precision, threshold_prob, probability
         )
-        
-        # 3. 最终验证采样
-        print(f"\n=== 执行最终验证采样 (测试能量: {tde_estimate:.3f} eV) ===")
-        verified_prob = self.get_fp_probability(tde_estimate, verification_samples, **kwargs)
-        
-        if verified_prob < threshold_prob:
-            print(f"[验证修正] 估计值概率 ({verified_prob:.2f}) 未达标，回退至安全上界 {high_eng:.3f} eV")
-            tde_estimate = high_eng
-            verified_prob = high_prob
-        
-        print("\n" + "="*60)
-        print("TDE 搜索流程结束")
-        print("="*60)
-        print(f"方向 <{self.direction}> 下的估计 TDE: {tde_estimate:.3f} ± {precision:.3f} eV")
-        print(f"在该能量下，Frenkel Pair 形成的概率为: {verified_prob:.2f}")
-        print("="*60)
-        
-        return tde_estimate, verified_prob
+
+        for energy in dict.fromkeys((midpoint, high)):
+            observed = self.get_fp_probability(energy, verification_samples,
+                                               sample_inputs=verify_paths, **kwargs)
+            if observed >= threshold_prob:
+                return energy, observed
+        raise RuntimeError("Neither the midpoint nor the upper bracket passed verification")

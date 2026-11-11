@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tdekit"
+dynamic = ["version"]
+description = "Atomistic recoil simulation and NEP dataset tools"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {file = "LICENSE"}
+dependencies = ["ase>=3.23", "numpy>=1.23"]
+
+[project.optional-dependencies]
+analysis = ["ovito"]
+fit = ["scipy"]
+selection = ["calorine", "matplotlib", "scipy", "scikit-learn"]
+umap = ["umap-learn"]
+
+[tool.setuptools.dynamic]
+version = {attr = "tdekit.__version__"}
+
+[tool.setuptools.packages.find]
+include = ["tdekit", "tdekit.*"]

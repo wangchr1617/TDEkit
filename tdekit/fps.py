@@ -11,7 +11,6 @@ from scipy.spatial import distance
 
 # 导入本地模块与外部计算库
 from .core import read_xyz, dump_xyz
-from calorine.nep import get_descriptors
 
 # 配置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -133,6 +132,8 @@ class DescriptorAnalyzer:
 
     def add_xyz_file(self, xyz_path: PathLike, label: str) -> None:
         """加载 XYZ 轨迹文件并计算 NEP 描述符。"""
+        from calorine.nep import get_descriptors
+
         file_path = Path(xyz_path)
         start_time = time()
         
