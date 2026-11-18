@@ -2,7 +2,7 @@ from .tde import generate_direction_table, generate_uniform_direction_table, sav
 from .tde import TDESearch
 from importlib import import_module
 
-__version__ = "0.1.2"
+__version__ = "1.0.0"
 __author__ = "Changrui Wang <wangchr1617@gmail.com>, Yidong Li <liyidong2023@buaa.edu.cn>"
 __license__ = "MIT"
 
